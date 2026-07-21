@@ -2,8 +2,8 @@ name: Marcacao Automatica RegyBox
 
 on:
   schedule:
-    # Executa de Segunda a Sexta às 18:35 (Hora de Portugal = 18:25 UTC)
-    - cron: '35 18 * * 1-5'
+    # 18:34 WEST = 17:34 UTC (Hora de Verão em Portugal)
+    - cron: '34 18 * * 1-5'
   workflow_dispatch: # Permite testar manualmente no site do GitHub
 
 jobs:
