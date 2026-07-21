@@ -59,7 +59,7 @@ def executar_marcacao():
         except Exception as e:
             print(f"⚠️ Seleção de dia: {e}")
 
-        # Rolar a página várias vezes para garantir que o bloco das 18:25 carrega totalmente na vista
+        # Scroll para carregar a lista toda
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(1500)
 
@@ -71,42 +71,38 @@ def executar_marcacao():
 
             print(f"🔎 A procurar: {modalidade} às {HORARIO_TARGET}...")
 
-            # Procura qualquer div/bloco que contenha a modalidade E a hora 18:25
-            seletor_bloco = f"xpath=//div[contains(translate(., 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'), '{modalidade}') and contains(., '{HORARIO_TARGET}')]"
-            blocos = page.locator(seletor_bloco)
+            # Procura o container div principal (id "feed_time_slot...") que contém a hora e a modalidade
+            slot_xpath = f"//div[contains(@id, 'feed_time_slot') and contains(translate(., 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'), '{modalidade}') and contains(., '{HORARIO_TARGET}')]"
+            slot = page.locator(f"xpath={slot_xpath}").first
 
-            if blocos.count() > 0:
-                print(f"💡 Bloco de {modalidade} das {HORARIO_TARGET} localizado!")
-                bloco = blocos.first
-                bloco.scroll_into_view_if_needed()
+            if slot.is_visible():
+                print(f"💡 Card de {modalidade} das {HORARIO_TARGET} localizado!")
+                slot.scroll_into_view_if_needed()
 
-                # Verifica se já está inscrito
-                texto_bloco = bloco.inner_text().upper()
-                if "CANCELAR" in texto_bloco or "INSCRITO" in texto_bloco:
+                texto_slot = slot.inner_text().upper()
+                if "CANCELAR" in texto_slot or "INSCRITO" in texto_slot:
                     print(f"🎉 JÁ ESTÁS INSCRITO em {modalidade} às {HORARIO_TARGET}!")
                     aula_marcada = True
                     break
 
-                # Tenta clicar no botão INSCREVER dentro desse bloco
-                botao = bloco.locator("text='INSCREVER'").first
-                if not botao.is_visible():
-                    botao = bloco.locator("button, a, div").filter(has_text="INSCREVER").first
+                # Procura o botão 'button' com onclick contendo marca_aulas.php dentro deste slot
+                botao = slot.locator("button[onclick*='marca_aulas.php'], button.buts_inscrever, button:has-text('INSCREVER')").first
 
                 if botao.is_visible():
                     print(f"🎯 Botão INSCREVER encontrado! A clicar...")
                     botao.click(force=True)
                     page.wait_for_timeout(3000)
-                    print(f"🎉 SUCESSO: Inscrição enviada para {modalidade} às {HORARIO_TARGET}!")
+                    print(f"🎉 SUCESSO: Inscrição efetuada em {modalidade} às {HORARIO_TARGET}!")
                     aula_marcada = True
                     break
 
-        # Backup: Se o seletor por bloco falhar, tenta clicar diretamente no botão INSCREVER que esteja ao lado das 18:25
+        # Método de emergência baseado na propriedade onclick revelada pelo HTML
         if not aula_marcada:
-            print("🔄 A tentar método de recurso (busca direta pelo botão)...")
-            botao_directo = page.locator(f"xpath=//*[contains(., '{HORARIO_TARGET}')]//text()[contains(., 'INSCREVER')]/parent::* | //*[contains(., '{HORARIO_TARGET}')]//button[contains(., 'INSCREVER')]").first
-            if botao_directo.is_visible():
-                botao_directo.click(force=True)
-                print(f"🎉 SUCESSO: Botão clicado via método direto para as {HORARIO_TARGET}!")
+            print("🔄 A tentar inscrição direta via seletor de emergência...")
+            botao_emergencia = page.locator(f"xpath=//div[contains(., '{HORARIO_TARGET}')]//button[contains(@onclick, 'marca_aulas.php')]").first
+            if botao_emergencia.is_visible():
+                botao_emergencia.click(force=True)
+                print(f"🎉 SUCESSO: Botão clicado via seletor direto das {HORARIO_TARGET}!")
                 aula_marcada = True
 
         if not aula_marcada:
