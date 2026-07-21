@@ -56,46 +56,57 @@ def executar_marcacao():
             if seletor_dia.is_visible():
                 seletor_dia.click(force=True)
                 print(f"✅ Dia {dia_alvo} selecionado!")
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(2500)
         except Exception as e:
             print(f"⚠️ Seleção de dia: {e}")
 
-        # Faz scroll até ao fim da lista para carregar os horários do fim do dia
+        # Rolar a página para carregar as aulas do final da tarde
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(1000)
+        page.wait_for_timeout(1500)
 
-        # Tentar Inscrição por ordem de prioridade
         aula_marcada = False
 
+        # Tentar Inscrição por ordem de prioridade
         for modalidade in AULAS_PRIORIDADE:
             if aula_marcada:
                 break
 
-            print(f"🔎 A verificar prioridade: {modalidade} às {HORARIO_TARGET}...")
+            print(f"🔎 A procurar: {modalidade} às {HORARIO_TARGET}...")
 
-            bloco_aula = page.locator("xpath=//*[contains(@class,'card') or contains(@class,'aula') or contains(@class,'row') or self::div]").filter(has_text=modalidade).filter(has_text=HORARIO_TARGET).first
+            # Busca por um bloco/linha que contenha a modalidade E a hora 18:25
+             XPath flexível para capturar o card inteiro da aula
+            cards = page.locator(f"xpath=//*[contains(text(),'{HORARIO_TARGET}')]/ancestor::*[contains(@class,'card') or contains(@class,'row') or contains(@class,'item') or contains(@style,'background') or self::div][position()<=3]")
 
-            if bloco_aula.count() > 0:
-                # Faz scroll até ao bloco da aula encontrada
-                bloco_aula.scroll_into_view_if_needed()
-                botao_inscrever = bloco_aula.locator("*:has-text('INSCREVER')").first
+            count = cards.count()
+            for i in range(count):
+                card = cards.nth(i)
+                texto_card = card.inner_text().upper()
 
-                if botao_inscrever.is_visible():
-                    print(f"🎯 Aula de {modalidade} das {HORARIO_TARGET} aberta! A clicar em INSCREVER...")
-                    botao_inscrever.click(force=True)
-                    page.wait_for_timeout(3000)
+                if modalidade in texto_card:
+                    card.scroll_into_view_if_needed()
+                    
+                    # Procura o botão INSCREVER dentro deste card
+                    botao_inscrever = card.locator("*:has-text('INSCREVER')").first
 
-                    conteudo = page.content()
-                    if "sucesso" in conteudo.lower() or "marcada" in conteudo.lower() or "cancelar" in conteudo.lower() or "estás inscrito" in conteudo.lower():
-                        print(f"🎉 SUCESSO: Inscrição garantida na aula de {modalidade} às {HORARIO_TARGET}!")
+                    if botao_inscrever.is_visible():
+                        print(f"🎯 Aula de {modalidade} encontrada! A clicar em INSCREVER...")
+                        botao_inscrever.click(force=True)
+                        page.wait_for_timeout(3000)
+
+                        conteudo = page.content().lower()
+                        if "cancelar" in conteudo or "inscrito" in conteudo or "sucesso" in conteudo:
+                            print(f"🎉 SUCESSO: Inscrito na aula de {modalidade} às {HORARIO_TARGET}!")
+                            aula_marcada = True
+                            break
+                        else:
+                            print(f"⚠️ Botão clicado, a verificar confirmação...")
+                            aula_marcada = True
+                            break
                     else:
-                        print(f"⚠️ Botão clicado para {modalidade}!")
-                    aula_marcada = True
-                else:
-                    print(f"⏳ Aula de {modalidade} encontrada, mas o botão INSCREVER não está ativo.")
+                        print(f"⏳ Aula de {modalidade} às {HORARIO_TARGET} encontrada, mas já está inscrita ou sem botão ativo.")
 
         if not aula_marcada:
-            print(f"❌ Nenhuma aula das {HORARIO_TARGET} com inscrições abertas para o dia {dia_alvo}.")
+            print(f"❌ Nenhuma aula correspondente às {HORARIO_TARGET} foi marcada.")
 
         browser.close()
 
