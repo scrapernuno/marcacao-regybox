@@ -49,51 +49,45 @@ def executar_marcacao():
             if botao_aulas.is_visible():
                 print("🗺️ A abrir calendário de aulas...")
                 botao_aulas.click()
-                page.wait_for_timeout(2500)
+                page.wait_for_timeout(3000)
         except Exception as e:
             print(f"Aviso navegação aulas: {e}")
 
-        # Clicar no DIA ALVO (+3 dias)
+        # Avançar dia / Mudar data no RegyBox
         print(f"📅 A selecionar o dia {dia_alvo} ({data_formatada_iso}) no calendário...")
         
-        dia_clicado = False
-        
-        # Estratégia 1: Procurar pelo atributo da data exata no elemento do RegyBox
+        # Tenta disparar a função interna de carregar aulas do dia no RegyBox
+        page.evaluate(f"""
+            if (typeof carrega_aulas === 'function') {{
+                carrega_aulas('{data_formatada_iso}');
+            }} else if (typeof muda_dia === 'function') {{
+                muda_dia('{data_formatada_iso}');
+            }}
+        """)
+        page.wait_for_timeout(2000)
+
+        # Tentar clicar no botão do dia ou na seta de avançar (se a função JS não existir)
         try:
-            seletor_data = page.locator(f"[onclick*='{data_formatada_iso}'], [data-date*='{data_formatada_iso}']").first
-            if seletor_data.is_visible(timeout=3000):
-                seletor_data.click(force=True)
-                dia_clicado = True
-                print(f"✅ Clique direto por data ISO ({data_formatada_iso}) executado!")
-        except Exception:
-            pass
-
-        # Estratégia 2: Procurar pela div/span de dia específica do calendário
-        if not dia_clicado:
-            try:
-                # Procura elemento do dia que tenha o número e seja visível (timeout reduzido para não travar)
-                elementos_dia = page.locator(f"xpath=//div[contains(@class,'day') or contains(@class,'dia') or contains(@id,'day')]//span[text()='{dia_alvo}'] | //td[not(contains(@class,'disabled'))]//span[text()='{dia_alvo}']")
-                if elementos_dia.count() > 0:
-                    elementos_dia.first.click(force=True, timeout=3000)
-                    dia_clicado = True
-                    print(f"✅ Clique por elemento de calendário do dia {dia_alvo} executado!")
-            except Exception:
-                pass
-
-        # Estratégia 3: Fallback via JavaScript direto na página
-        if not dia_clicado:
-            print("🔄 A tentar acionar a mudança de dia via JavaScript no RegyBox...")
-            page.evaluate(f"""
-                let el = Array.from(document.querySelectorAll('*')).find(e => e.textContent.trim() === '{dia_alvo}' && e.children.length === 0);
-                if (el) el.click();
-            """)
-            page.wait_for_timeout(2000)
+            seletor_dia = page.locator(f"[onclick*='{data_formatada_iso}'], [data-date*='{data_formatada_iso}']").first
+            if seletor_dia.is_visible(timeout=2000):
+                seletor_dia.click(force=True)
+                print(f"✅ Clique no elemento do dia {dia_alvo} executado!")
+            else:
+                # Se o dia não está visível, clica no botão '>' de avançar dia/semana
+                seta_avancar = page.locator("i.fa-chevron-right, i.fa-angle-right, .next, [onclick*='proximo']").first
+                if seta_avancar.is_visible(timeout=2000):
+                    print("➡️ A clicar na seta para avançar o calendário...")
+                    seta_avancar.click(force=True)
+                    page.wait_for_timeout(2000)
+        except Exception as e:
+            print(f"Nota navegação: {e}")
 
         page.wait_for_timeout(3000)
 
-        # Scroll para carregar a página toda
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(1500)
+        # Fazer vários scrollings suaves para forçar o carregamento do feed de aulas (lazy loading)
+        for i in range(3):
+            page.evaluate("window.scrollBy(0, 400)")
+            page.wait_for_timeout(500)
 
         aula_marcada = False
 
@@ -104,7 +98,8 @@ def executar_marcacao():
 
             print(f"🔎 A procurar no ecrã: {modalidade} às {HORARIO_TARGET}...")
 
-            slots = page.locator("div[id*='feed_time_slot'], div.card2, div[class*='row']").filter(has_text=HORARIO_TARGET).filter(has_text=modalidade)
+            # Pesquisa flexível no DOM do RegyBox
+            slots = page.locator("div, tr, li").filter(has_text=HORARIO_TARGET).filter(has_text=modalidade)
 
             if slots.count() > 0:
                 slot = slots.first
@@ -118,7 +113,7 @@ def executar_marcacao():
                     aula_marcada = True
                     break
 
-                botao = slot.locator("button[onclick*='marca_aulas.php'], button.buts_inscrever, button:has-text('INSCREVER')").first
+                botao = slot.locator("button, a, input[type='button']").filter(has_text="INSCREVER").first
 
                 if botao.is_visible():
                     print(f"🎯 Botão INSCREVER visível para {modalidade}! A clicar...")
@@ -138,7 +133,7 @@ def executar_marcacao():
         # Recurso de emergência se não encontrou pela prioridade
         if not aula_marcada:
             print(f"🔄 A tentar encontrar QUALQUER botão INSCREVER próximo das {HORARIO_TARGET}...")
-            botoes_alvo = page.locator(f"xpath=//div[contains(., '{HORARIO_TARGET}')]//button[contains(., 'INSCREVER') or contains(@class, 'buts_inscrever')]")
+            botoes_alvo = page.locator(f"xpath=//*[contains(text(), '{HORARIO_TARGET}')]/ancestor::div[contains(@class,'card') or contains(@class,'row') or contains(@class,'slot') or contains(@id,'slot') or position()<=3]//button[contains(., 'INSCREVER') or contains(., 'Inscrever')]")
             if botoes_alvo.count() > 0:
                 print(f"🎯 Botão das {HORARIO_TARGET} localizado! A clicar...")
                 botoes_alvo.first.click(force=True)
