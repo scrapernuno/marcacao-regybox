@@ -73,8 +73,7 @@ def executar_marcacao():
 
             print(f"🔎 A procurar: {modalidade} às {HORARIO_TARGET}...")
 
-            # Busca por um bloco/linha que contenha a modalidade E a hora 18:25
-             XPath flexível para capturar o card inteiro da aula
+            # XPath flexível para capturar o card inteiro da aula
             cards = page.locator(f"xpath=//*[contains(text(),'{HORARIO_TARGET}')]/ancestor::*[contains(@class,'card') or contains(@class,'row') or contains(@class,'item') or contains(@style,'background') or self::div][position()<=3]")
 
             count = cards.count()
