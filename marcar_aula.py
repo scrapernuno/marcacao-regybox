@@ -22,7 +22,7 @@ def executar_marcacao():
 
     print(f"[{agora_pt.strftime('%H:%M:%S')}] 🚀 A iniciar o robô de marcação...")
     print(f"📅 Data atual PT: {agora_pt.strftime('%d/%m/%Y')}")
-    print(f"📅 Data alvo (+3 dias): {data_alvo.strftime('%d/%m/%Y')} (Procurando dia {dia_alvo})")
+    print(f"📅 Data alvo (+3 dias): {data_alvo.strftime('%d/%m/%Y')} (Dia {dia_alvo})")
     print(f"⏰ Horário pretendido: {HORARIO_TARGET}")
 
     if not USERNAME or not PASSWORD:
@@ -38,134 +38,122 @@ def executar_marcacao():
         page.goto(REGYBOX_URL, wait_until="networkidle")
         page.wait_for_timeout(2000)
 
-        # Passo 1: Selecionar a Box
+        # 1. Selecionar Box
         try:
             campo_pesquisa = page.locator("input[placeholder*='Procura'], input[placeholder*='box'], input[type='text']").first
-            if campo_pesquisa.is_visible(timeout=5000):
+            if campo_pesquisa.is_visible(timeout=4000):
                 print(f"🔍 A selecionar a Box: {NOME_BOX}...")
                 campo_pesquisa.fill(NOME_BOX)
                 page.wait_for_timeout(1000)
                 item_box = page.locator(f"text='{NOME_BOX}'").first
                 if item_box.is_visible(timeout=3000):
                     item_box.click()
-                    page.wait_for_timeout(1500)
+                    page.wait_for_timeout(1000)
         except Exception as e:
-            print(f"Nota na seleção da box: {e}")
+            print(f"Nota box: {e}")
 
-        # Passo 2: Preencher E-mail e Password
+        # 2. Login
         print("🔑 A preencher dados de acesso...")
-        campo_email = page.locator("input[type='email'], input[placeholder*='e-mail'], input[name*='user']").first
-        campo_email.fill(USERNAME)
-        
-        campo_pass = page.locator("input[type='password'], input[placeholder*='password'], input[name*='pass']").first
-        campo_pass.fill(PASSWORD)
+        page.locator("input[type='email'], input[placeholder*='e-mail'], input[name*='user']").first.fill(USERNAME)
+        page.locator("input[type='password'], input[placeholder*='password'], input[name*='pass']").first.fill(PASSWORD)
         
         print("🚀 A efetuar Login...")
         try:
             page.locator("button:has-text('LOGIN'), input[value='LOGIN'], input[type='submit']").first.click(timeout=3000)
         except Exception:
-            campo_pass.press("Enter")
+            page.keyboard.press("Enter")
 
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(4000)
 
-        # Passo 3: Abrir a secção AULAS (Obrigatório segundo a captura de ecrã)
-        print("🗺️ A clicar em 'AULAS' para abrir o mapa de marcação...")
+        # 3. PASSO 1 DA FOTO: Clicar no texto azul "AULAS"
+        print("🗺️ PASSO 1: A clicar no texto 'AULAS'...")
         try:
-            # Clica no link textual 'AULAS' visível na imagem ou no ícone do calendário azul
-            link_aulas = page.locator("text='AULAS', a[onclick*='calendario_aulas'], .fa-calendar-alt").first
-            if link_aulas.is_visible(timeout=5000):
-                link_aulas.click(force=True)
-                print("✅ Navegação para 'AULAS' efetuada com sucesso!")
-                page.wait_for_timeout(3000)
-            else:
-                print("⚠️ Link 'AULAS' não encontrado diretamente, tentando chamada JS...")
-                page.evaluate("if(typeof calendario_aulas === 'function') calendario_aulas();")
-                page.wait_for_timeout(3000)
+            # Seleciona exatamente o elemento 'AULAS' azul que está por cima do painel
+            link_aulas = page.locator("text='AULAS'").first
+            link_aulas.click(force=True)
+            print("✅ Clicado em AULAS com sucesso!")
+            page.wait_for_timeout(3000)
         except Exception as e:
-            print(f"Aviso navegação aulas: {e}")
+            print(f"Erro ao clicar em AULAS, tentando por JavaScript: {e}")
+            page.evaluate("if(typeof calendario_aulas === 'function') calendario_aulas();")
+            page.wait_for_timeout(3000)
 
-        # Passo 4: Mudar para o dia alvo no calendário
-        print(f"📅 A selecionar o dia {dia_alvo} ({data_formatada_iso}) no calendário...")
-        
-        # Dispara função de carregamento de aulas para a data alvo
-        page.evaluate(f"""
-            try {{
-                if (typeof carrega_aulas === 'function') {{
-                    carrega_aulas('{data_formatada_iso}');
-                }} else if (typeof muda_dia === 'function') {{
-                    muda_dia('{data_formatada_iso}');
-                }}
-            }} catch(e) {{}}
-        """)
-        page.wait_for_timeout(2000)
+        # 4. PASSO 2 DA FOTO: Selecionar o dia do mês no calendário à esquerda
+        print(f"📅 PASSO 2: A clicar no dia {dia_alvo} no calendário mensal...")
+        dia_clicado = False
 
-        # Clica na aba do dia correspondente (ex: 'SEX' ou no dia numérico)
+        # Tentar clicar no número do dia exatamente como aparece na grelha da Imagem 2
         try:
-            seletor_dia = page.locator(f"//span[text()='{dia_alvo}'] | //td[not(contains(@class,'disabled'))]//span[text()='{dia_alvo}'] | //div[contains(@class,'day')]//text()[normalize-space()='{dia_alvo}']").first
-            if seletor_dia.is_visible(timeout=2000):
-                seletor_dia.click(force=True)
-                print(f"✅ Clique no elemento do dia {dia_alvo} executado!")
-        except Exception:
-            pass
+            # Procura o número do dia isolado no calendário
+            seletor_numero_dia = page.locator(f"xpath=//div[contains(@class,'calendar') or contains(@class,'month') or contains(@class,'day')]//*[text()='{dia_alvo}'] | //td//*[text()='{dia_alvo}'] | //span[text()='{dia_alvo}']").first
+            if seletor_numero_dia.is_visible(timeout=3000):
+                seletor_numero_dia.click(force=True)
+                print(f"✅ Dia {dia_alvo} clicado no calendário!")
+                dia_clicado = True
+        except Exception as e:
+            print(f"Nota clique no dia: {e}")
 
-        page.wait_for_timeout(2000)
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(1000)
+        # Se o clique visual falhar, executa a função de mudança de dia via JS
+        if not dia_clicado:
+            print("🔄 A acionar atualização da data via instrução interna...")
+            page.evaluate(f"""
+                try {{
+                    if (typeof carrega_aulas === 'function') carrega_aulas('{data_formatada_iso}');
+                    if (typeof muda_dia === 'function') muda_dia('{data_formatada_iso}');
+                }} catch(e) {{}}
+            """)
 
-        # Guardar foto do ecrã após entrar nas aulas
+        page.wait_for_timeout(2500)
+
+        # Guardar screenshot de validação
         page.screenshot(path="ecra_regybox.png", full_page=True)
 
+        # 5. PASSO 3 DA FOTO: Fazer scroll e encontrar o botão verde INSCREVER
+        print(f"🔎 PASSO 3: A procurar a aula das {HORARIO_TARGET} no painel da direita...")
+        
         aula_marcada = False
 
-        # Passo 5: Procurar e marcar a aula
+        # Tentativa 1: Procurar pelas modalidades prioritárias
         for modalidade in AULAS_PRIORIDADE:
             if aula_marcada:
                 break
 
-            print(f"🔎 A procurar no ecrã: {modalidade} às {HORARIO_TARGET}...")
+            # Localiza o cartão/bloco da aula que contém a hora pretendida
+            cards = page.locator("div, tr, li").filter(has_text=HORARIO_TARGET).filter(has_text=modalidade)
 
-            slots = page.locator("div, tr, li").filter(has_text=HORARIO_TARGET).filter(has_text=modalidade)
+            if cards.count() > 0:
+                card = cards.first
+                card.scroll_into_view_if_needed()
+                page.wait_for_timeout(500)
 
-            if slots.count() > 0:
-                slot = slots.first
-                slot.scroll_into_view_if_needed()
-                texto_slot = slot.inner_text().upper()
+                # Procura o botão verde INSCREVER dentro do cartão
+                botao_inscrever = card.locator("button, a, div").filter(has_text="INSCREVER").first
 
-                print(f"💡 Encontrada aula de {modalidade} ({HORARIO_TARGET})!")
-
-                if "CANCELAR" in texto_slot or "INSCRITO" in texto_slot:
-                    print(f"🎉 JÁ ESTÁS INSCRITO em {modalidade} às {HORARIO_TARGET}!")
-                    aula_marcada = True
-                    break
-
-                botao = slot.locator("button, a, input[type='button']").filter(has_text="INSCREVER").first
-
-                if botao.is_visible():
-                    print(f"🎯 Botão INSCREVER visível para {modalidade}! A clicar...")
-                    botao.click(force=True)
+                if botao_inscrever.is_visible():
+                    print(f"🎯 Encontrado botão INSCREVER para {modalidade} ({HORARIO_TARGET})! A clicar...")
+                    botao_inscrever.click(force=True)
                     page.wait_for_timeout(3000)
-
-                    conteudo_pos = page.content().lower()
-                    if "cancelar" in conteudo_pos or "inscrito" in conteudo_pos or "sucesso" in conteudo_pos:
-                        print(f"🎉 SUCESSO CONFIRMADO: Inscrição efetuada em {modalidade} às {HORARIO_TARGET}!")
-                    else:
-                        print(f"⚠️ Clique efetuado no botão de {modalidade}. Verifica na app.")
+                    print(f"🎉 SUCESSO: Inscrição efetuada em {modalidade} às {HORARIO_TARGET}!")
                     aula_marcada = True
                     break
 
+        # Tentativa 2 (Recurso): Procurar QUALQUER aula que tenha as 18:35 e o botão INSCREVER
         if not aula_marcada:
-            print(f"🔄 A tentar encontrar QUALQUER botão INSCREVER próximo das {HORARIO_TARGET}...")
-            botoes_alvo = page.locator(f"xpath=//*[contains(text(), '{HORARIO_TARGET}')]/ancestor::div[contains(@class,'card') or contains(@class,'row') or contains(@class,'slot') or contains(@id,'slot') or position()<=3]//button[contains(., 'INSCREVER') or contains(., 'Inscrever')]")
-            if botoes_alvo.count() > 0:
-                print(f"🎯 Botão das {HORARIO_TARGET} localizado! A clicar...")
-                botoes_alvo.first.click(force=True)
+            print(f"🔄 A procurar qualquer botão INSCREVER correspondente às {HORARIO_TARGET}...")
+            # XPath direto para apanhar o botão verde INSCREVER do bloco do horário pretendido
+            botao_generico = page.locator(f"xpath=//*[contains(text(), '{HORARIO_TARGET}')]/ancestor::*[contains(@class,'card') or contains(@class,'box') or position()<=4]//button[contains(., 'INSCREVER')] | //*[contains(text(), '{HORARIO_TARGET}')]/ancestor::*[contains(@class,'card') or contains(@class,'box') or position()<=4]//*[contains(@class,'btn') or contains(text(), 'INSCREVER')]").first
+
+            if botao_generico.is_visible():
+                botao_generico.scroll_into_view_if_needed()
+                print("🎯 Botão INSCREVER genérico encontrado! A clicar...")
+                botao_generico.click(force=True)
                 page.wait_for_timeout(3000)
-                print("🎉 Clique de recurso executado com sucesso!")
+                print("🎉 Inscrição efetuada com sucesso!")
                 aula_marcada = True
 
         if not aula_marcada:
-            print(f"❌ Não foi possível realizar a inscrição para as {HORARIO_TARGET} no dia {dia_alvo}.")
+            print(f"❌ Não foi possível encontrar ou clicar no botão INSCREVER para as {HORARIO_TARGET} no dia {dia_alvo}.")
 
         browser.close()
 
