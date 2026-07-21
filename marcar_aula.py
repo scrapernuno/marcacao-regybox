@@ -37,7 +37,7 @@ PASSWORD = os.environ.get("REGYBOX_PASS", "").strip()
 TIMEZONE = ZoneInfo("Atlantic/Madeira")
 
 # A aula é procurada quatro dias depois da execução.
-DIAS_ANTECEDENCIA = 4
+DIAS_ANTECEDENCIA = 3
 
 HORA_ALVO = "18:25"
 
