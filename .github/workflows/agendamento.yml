@@ -2,8 +2,9 @@ name: Marcacao RegyBox
 
 on:
   schedule:
-    # 17:34 UTC = 18:34 Madeira (horário de verão)
+    # 17:34 UTC corresponde a 18:34 na Madeira durante o horário de verão.
     - cron: '34 17 * * 1-5'
+
   workflow_dispatch:
 
 jobs:
@@ -16,23 +17,22 @@ jobs:
 
     steps:
       - name: Checkout do Repositório
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Configurar Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.3.0
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: Atualizar pip e instalar dependências
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install playwright
+          python -m pip install playwright
 
       - name: Instalar Chromium
         run: |
-          playwright install chromium
-          playwright install-deps chromium
+          python -m playwright install chromium
+          python -m playwright install-deps chromium
 
       - name: Executar Script de Marcação
         id: marcacao
@@ -52,8 +52,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Falhar workflow se a marcação falhou
+      - name: Confirmar Resultado da Marcação
         if: steps.marcacao.outcome == 'failure'
         run: |
-          echo "A marcação falhou. Consulte o artefacto 'regybox-diagnostico-${{ github.run_number }}'."
+          echo "A marcação falhou."
+          echo "Consulte o artefacto regybox-diagnostico-${{ github.run_number }}."
           exit 1
