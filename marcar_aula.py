@@ -9,12 +9,11 @@ NOME_BOX = "Naval Box"
 USERNAME = os.environ.get("REGYBOX_USER", "")
 PASSWORD = os.environ.get("REGYBOX_PASS", "")
 
-# Horário alvo atualizado para as 18:35
 HORARIO_TARGET = "18:35"
 AULAS_PRIORIDADE = ["HYROX", "HIROX", "CROSSFIT", "STRENGHT", "STRENGTH"]
 
 def executar_marcacao():
-    # Cálculo da data no fuso de Portugal (UTC+1 WEST)
+    # Cálculo exato no fuso horário de Portugal (UTC+1 WEST)
     agora_utc = datetime.datetime.now(datetime.timezone.utc)
     agora_pt = agora_utc + datetime.timedelta(hours=1) 
     
@@ -50,30 +49,38 @@ def executar_marcacao():
             if botao_aulas.is_visible():
                 print("🗺️ A abrir calendário de aulas...")
                 botao_aulas.click()
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(2500)
         except Exception as e:
             print(f"Aviso navegação aulas: {e}")
 
-        # Clicar no dia (+3 dias)
+        # Clicar no DIA ALVO (+3 dias)
         print(f"📅 A selecionar o dia {dia_alvo} no calendário...")
         try:
-            seletor_dia = page.locator(f"xpath=//td[not(contains(@class,'disabled'))]//span[text()='{dia_alvo}'] | //div[contains(@class,'day')]//text()[normalize-space()='{dia_alvo}']/parent::*").first
+            # Procura especificamente pelas células válidas (td/div) que contêm APENAS o número do dia
+            seletor_dia = page.locator(
+                f"//td[not(contains(@class,'disabled')) and not(contains(@class,'off'))]//span[text()='{dia_alvo}'] | "
+                f"//td[not(contains(@class,'disabled')) and not(contains(@class,'off'))][text()='{dia_alvo}'] | "
+                f"//div[contains(@class,'day') and not(contains(@class,'disabled'))]//span[text()='{dia_alvo}']"
+            ).first
+
             if seletor_dia.is_visible():
                 seletor_dia.click(force=True)
                 print(f"✅ Clique executado no dia {dia_alvo}!")
                 page.wait_for_timeout(3000)
             else:
-                print(f"⚠️ Dia {dia_alvo} não estava visível no calendário.")
+                print(f"⚠️ Dia {dia_alvo} não encontrado via seletor estrito, a tentar clique genérico pelo texto...")
+                page.get_by_text(dia_alvo, exact=True).first.click(force=True)
+                page.wait_for_timeout(3000)
         except Exception as e:
             print(f"⚠️ Erro ao clicar no dia: {e}")
 
-        # Scroll para carregar a tarde toda
+        # Scroll para carregar a página toda
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(1500)
 
         aula_marcada = False
 
-        # Tenta localizar a aula das 18:35 por prioridade
+        # Procurar a aula por prioridade
         for modalidade in AULAS_PRIORIDADE:
             if aula_marcada:
                 break
@@ -105,25 +112,25 @@ def executar_marcacao():
                     if "cancelar" in conteudo_pos or "inscrito" in conteudo_pos or "sucesso" in conteudo_pos:
                         print(f"🎉 SUCESSO CONFIRMADO: Inscrição efetuada em {modalidade} às {HORARIO_TARGET}!")
                     else:
-                        print(f"⚠️ Clique efetuado no botão de {modalidade}. Verifica no RegyBox.")
+                        print(f"⚠️ Clique efetuado no botão de {modalidade}. Verifica na app.")
                     aula_marcada = True
                     break
                 else:
-                    print(f"⏳ Aula de {modalidade} localizada, mas o botão INSCREVER não está visível no card.")
+                    print(f"⏳ Aula de {modalidade} localizada, mas o botão INSCREVER ainda não está disponível/visível.")
 
-        # Recurso genérico se não encontrou pela prioridade
+        # Recurso de emergência se não encontrou pela prioridade
         if not aula_marcada:
             print(f"🔄 A tentar encontrar QUALQUER botão INSCREVER próximo das {HORARIO_TARGET}...")
             botoes_alvo = page.locator(f"xpath=//div[contains(., '{HORARIO_TARGET}')]//button[contains(., 'INSCREVER') or contains(@class, 'buts_inscrever')]")
             if botoes_alvo.count() > 0:
-                print(f"🎯 Botão genérico das {HORARIO_TARGET} localizado! A clicar...")
+                print(f"🎯 Botão das {HORARIO_TARGET} localizado! A clicar...")
                 botoes_alvo.first.click(force=True)
                 page.wait_for_timeout(3000)
                 print("🎉 Clique de recurso executado com sucesso!")
                 aula_marcada = True
 
         if not aula_marcada:
-            print(f"❌ Não foi possível realizar a inscrição para as {HORARIO_TARGET}.")
+            print(f"❌ Não foi possível realizar a inscrição para as {HORARIO_TARGET} no dia {dia_alvo}.")
 
         browser.close()
 
