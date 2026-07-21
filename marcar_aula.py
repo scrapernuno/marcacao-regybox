@@ -242,11 +242,7 @@ def selecionar_box(page):
                 continue
 
             campo.fill(NOME_BOX)
-
-            esperar(
-                page,
-                1000,
-            )
+            esperar(page, 1000)
 
             opcoes = [
                 page.get_by_text(
@@ -264,15 +260,8 @@ def selecionar_box(page):
                     opcao,
                     timeout=3000,
                 ):
-                    print(
-                        "✅ Box selecionada."
-                    )
-
-                    esperar(
-                        page,
-                        1000,
-                    )
-
+                    print("✅ Box selecionada.")
+                    esperar(page, 1000)
                     return True
 
         except Exception:
@@ -280,16 +269,14 @@ def selecionar_box(page):
 
     print(
         "ℹ️ A Box pode já estar selecionada "
-        "ou o campo de pesquisa não está disponível."
+        "ou o campo não está disponível."
     )
 
     return False
 
 
 def efetuar_login(page):
-    print(
-        "🔑 A preencher dados de acesso..."
-    )
+    print("🔑 A preencher dados de acesso...")
 
     campo_utilizador = page.locator(
         "input[type='email'], "
@@ -323,9 +310,7 @@ def efetuar_login(page):
             "Campo de password não encontrado."
         )
 
-    print(
-        "🚀 A efetuar Login..."
-    )
+    print("🚀 A efetuar Login...")
 
     botoes_login = page.locator(
         "button:has-text('LOGIN'), "
@@ -349,14 +334,9 @@ def efetuar_login(page):
     except PlaywrightTimeoutError:
         pass
 
-    esperar(
-        page,
-        3000,
-    )
+    esperar(page, 3000)
 
-    print(
-        f"🌐 URL após login: {page.url}"
-    )
+    print(f"🌐 URL após login: {page.url}")
 
     if "login.php" in page.url.lower():
         guardar_diagnostico(
@@ -366,7 +346,7 @@ def efetuar_login(page):
 
         raise RuntimeError(
             "O login não foi concluído. "
-            "A página continua no formulário de login."
+            "A página continua no login."
         )
 
     guardar_diagnostico(
@@ -380,9 +360,7 @@ def efetuar_login(page):
 # ============================================================
 
 def abrir_aulas(page):
-    print(
-        "📚 PASSO 1: A clicar em AULAS..."
-    )
+    print("📚 PASSO 1: A clicar em AULAS...")
 
     candidatos = [
         page.get_by_text(
@@ -434,10 +412,7 @@ def abrir_aulas(page):
             "ou clicar em AULAS."
         )
 
-    esperar(
-        page,
-        3500,
-    )
+    esperar(page, 3500)
 
     try:
         page.get_by_text(
@@ -461,9 +436,7 @@ def abrir_aulas(page):
             "mas o calendário não apareceu."
         )
 
-    print(
-        "✅ Calendário de aulas aberto."
-    )
+    print("✅ Calendário de aulas aberto.")
 
     guardar_diagnostico(
         page,
@@ -472,7 +445,7 @@ def abrir_aulas(page):
 
 
 # ============================================================
-# SELECIONAR E CARREGAR O DIA
+# SELECIONAR DIA NO CALENDÁRIO
 # ============================================================
 
 def selecionar_dia_calendario(page, data_alvo):
@@ -486,232 +459,99 @@ def selecionar_dia_calendario(page, data_alvo):
 
     limpar_marcadores(page)
 
-    resultado = page.evaluate(
-        """
-        parametros => {
-            const dataIso = parametros.dataIso;
-            const dia = String(parametros.dia);
-
-            function normalizar(texto) {
-                return (texto || "")
-                    .replace(/\\u00a0/g, " ")
-                    .replace(/\\s+/g, " ")
-                    .trim();
-            }
-
-            function visivel(elemento) {
-                if (!elemento) {
-                    return false;
-                }
-
-                const estilo =
-                    window.getComputedStyle(elemento);
-
-                const rect =
-                    elemento.getBoundingClientRect();
-
-                return (
-                    estilo.display !== "none" &&
-                    estilo.visibility !== "hidden" &&
-                    estilo.opacity !== "0" &&
-                    rect.width > 0 &&
-                    rect.height > 0
-                );
-            }
-
-            const elementosData = Array.from(
-                document.querySelectorAll(
-                    `[onclick*="wods_dia"][onclick*="${dataIso}"]`
-                )
-            );
-
-            for (const elementoData of elementosData) {
-                const descendentes = [
-                    elementoData,
-                    ...Array.from(
-                        elementoData.querySelectorAll("*")
-                    )
-                ];
-
-                const numeroDia =
-                    descendentes.find(elemento => {
-                        return (
-                            visivel(elemento) &&
-                            normalizar(
-                                elemento.textContent
-                            ) === dia
-                        );
-                    });
-
-                if (numeroDia) {
-                    const clicavel =
-                        numeroDia.closest(
-                            "[onclick*='wods_dia']"
-                        ) || elementoData;
-
-                    clicavel.setAttribute(
-                        "data-rbx-dia-alvo",
-                        "true"
-                    );
-
-                    return {
-                        sucesso: true,
-                        metodo:
-                            "wods_dia_numero",
-                        tag:
-                            clicavel.tagName,
-                        texto:
-                            normalizar(
-                                clicavel.textContent
-                            ),
-                        onclick:
-                            clicavel.getAttribute(
-                                "onclick"
-                            ) || null
-                    };
-                }
-            }
-
-            if (elementosData.length > 0) {
-                const elemento =
-                    elementosData[0];
-
-                elemento.setAttribute(
-                    "data-rbx-dia-alvo",
-                    "true"
-                );
-
-                return {
-                    sucesso: true,
-                    metodo:
-                        "wods_dia_onclick",
-                    tag:
-                        elemento.tagName,
-                    texto:
-                        normalizar(
-                            elemento.textContent
-                        ),
-                    onclick:
-                        elemento.getAttribute(
-                            "onclick"
-                        ) || null
-                };
-            }
-
-            return {
-                sucesso: false,
-                totalElementosData:
-                    elementosData.length
-            };
-        }
-        """,
-        {
-            "dia": dia_alvo,
-            "dataIso": data_iso,
-        },
+    # A estrutura real da Regibox usa:
+    # onclick="wods_dia('2026-07-24')"
+    seletor_dia = (
+        f"[onclick=\"wods_dia('{data_iso}')\"], "
+        f"[onclick*=\"wods_dia('{data_iso}')\"]"
     )
+
+    elementos = page.locator(seletor_dia)
+
+    try:
+        total = elementos.count()
+    except Exception:
+        total = 0
 
     print(
-        f"🔧 Elemento do dia encontrado: "
-        f"{resultado}"
+        f"🔎 Elementos do calendário associados "
+        f"a {data_iso}: {total}"
     )
 
-    if not resultado.get("sucesso"):
+    if total == 0:
         guardar_diagnostico(
             page,
             "erro_dia_nao_encontrado",
         )
 
         raise RuntimeError(
-            f"Não foi encontrado no calendário "
-            f"um elemento wods_dia para {data_iso}."
+            f"Não foi encontrado um elemento "
+            f"wods_dia para {data_iso}."
         )
 
-    resultado_chamada = page.evaluate(
-        """
-        dataIso => {
-            if (
-                typeof window.wods_dia
-                !== "function"
-            ) {
-                return {
-                    sucesso: false,
-                    erro:
-                        "window.wods_dia não existe",
-                    tipo:
-                        typeof window.wods_dia
-                };
-            }
+    elemento_dia = elementos.first
 
-            try {
-                window.wods_dia(dataIso);
+    try:
+        elemento_dia.wait_for(
+            state="visible",
+            timeout=7000,
+        )
 
-                return {
-                    sucesso: true,
-                    metodo:
-                        "window.wods_dia",
-                    data: dataIso
-                };
+        onclick = (
+            elemento_dia.get_attribute("onclick")
+            or ""
+        )
 
-            } catch (erro) {
-                return {
-                    sucesso: false,
-                    erro:
-                        String(erro),
-                    stack:
-                        erro && erro.stack
-                        ? String(erro.stack)
-                        : null
-                };
-            }
-        }
-        """,
-        data_iso,
-    )
+        texto = normalizar_texto(
+            elemento_dia.inner_text()
+        )
 
-    print(
-        f"🔧 Resultado de wods_dia: "
-        f"{resultado_chamada}"
-    )
+        tag = elemento_dia.evaluate(
+            "elemento => elemento.tagName"
+        )
 
-    if not resultado_chamada.get("sucesso"):
         print(
-            "⚠️ A chamada direta wods_dia falhou. "
-            "A tentar clicar no elemento original..."
+            f"🔧 Elemento do dia encontrado: "
+            f"tag={tag} | "
+            f"texto={texto} | "
+            f"onclick={onclick}"
         )
 
-        dia = page.locator(
-            "[data-rbx-dia-alvo='true']"
-        ).first
+        elemento_dia.evaluate(
+            """
+            elemento => {
+                elemento.setAttribute(
+                    "data-rbx-dia-alvo",
+                    "true"
+                );
+            }
+            """
+        )
 
-        try:
-            dia.wait_for(
-                state="attached",
-                timeout=5000,
-            )
+        elemento_dia.scroll_into_view_if_needed()
+        esperar(page, 500)
 
-            dia.scroll_into_view_if_needed()
+        # Clique real no TD. Não chamar wods_dia diretamente.
+        elemento_dia.click(
+            timeout=7000,
+            force=True,
+        )
 
-            dia.click(
-                timeout=5000,
-                force=True,
-            )
+        print(
+            f"✅ Clique real no calendário "
+            f"para {data_iso} realizado."
+        )
 
-            print(
-                "✅ Clique de fallback "
-                "no calendário realizado."
-            )
+    except Exception as exc:
+        guardar_diagnostico(
+            page,
+            "erro_clique_dia",
+        )
 
-        except Exception as exc:
-            guardar_diagnostico(
-                page,
-                "erro_chamada_wods_dia",
-            )
-
-            raise RuntimeError(
-                f"Falhou wods_dia e também "
-                f"o clique no dia {dia_alvo}: {exc}"
-            ) from exc
+        raise RuntimeError(
+            f"Não foi possível clicar no dia "
+            f"{dia_alvo}: {exc}"
+        ) from exc
 
     esperar_aulas_da_data(
         page,
@@ -730,42 +570,129 @@ def selecionar_dia_calendario(page, data_alvo):
 
 
 def esperar_aulas_da_data(page, data_alvo):
-    data_iso = data_alvo.strftime(
-        "%Y-%m-%d"
-    )
+    data_iso = data_alvo.strftime("%Y-%m-%d")
+    dia = data_alvo.day
+    mes = MESES_PT[data_alvo.month]
+    ano = data_alvo.year
 
     print(
         f"⏳ A aguardar o carregamento "
         f"das aulas de {data_iso}..."
     )
 
-    try:
-        page.wait_for_function(
-            """
-            dataIso => {
-                const botoes = Array.from(
-                    document.querySelectorAll(
-                        "[onclick*='marca_aulas.php']"
-                    )
-                );
+    carregou = False
 
-                return botoes.some(elemento => {
-                    const onclick =
-                        elemento.getAttribute(
-                            "onclick"
-                        ) || "";
-
-                    return onclick.includes(
-                        `data=${dataIso}`
-                    );
-                });
-            }
-            """,
-            arg=data_iso,
-            timeout=20000,
+    for tentativa in range(1, 5):
+        print(
+            f"🔄 Tentativa de carregamento "
+            f"{tentativa}/4..."
         )
 
-    except PlaywrightTimeoutError:
+        try:
+            page.wait_for_function(
+                """
+                parametros => {
+                    const texto = (
+                        document.body.innerText || ""
+                    )
+                    .replace(/\\s+/g, " ")
+                    .toUpperCase();
+
+                    const cabecalhoEsperado =
+                        `${parametros.dia} DE `
+                        + `${parametros.mes} DE `
+                        + `${parametros.ano}`;
+
+                    const temCabecalho =
+                        texto.includes(
+                            cabecalhoEsperado
+                        );
+
+                    const temHora =
+                        texto.includes(
+                            parametros.hora
+                        );
+
+                    const controlos = Array.from(
+                        document.querySelectorAll(
+                            "button, a, [onclick], "
+                            + "[role='button']"
+                        )
+                    );
+
+                    const temInscrever =
+                        controlos.some(elemento => {
+                            const textoElemento = (
+                                elemento.innerText
+                                || elemento.value
+                                || ""
+                            )
+                            .replace(/\\s+/g, " ")
+                            .trim()
+                            .toUpperCase();
+
+                            const onclick = (
+                                elemento.getAttribute(
+                                    "onclick"
+                                ) || ""
+                            );
+
+                            return (
+                                textoElemento.includes(
+                                    "INSCREVER"
+                                )
+                                || onclick.includes(
+                                    "marca_aulas.php"
+                                )
+                            );
+                        });
+
+                    return (
+                        temHora
+                        && (
+                            temCabecalho
+                            || temInscrever
+                        )
+                    );
+                }
+                """,
+                arg={
+                    "dia": str(dia),
+                    "mes": mes,
+                    "ano": str(ano),
+                    "hora": HORA_ALVO,
+                },
+                timeout=8000,
+            )
+
+            carregou = True
+            break
+
+        except PlaywrightTimeoutError:
+            if tentativa < 4:
+                print(
+                    "⚠️ O painel ainda não terminou "
+                    "de carregar. A repetir o clique..."
+                )
+
+                dia_locator = page.locator(
+                    "[data-rbx-dia-alvo='true']"
+                ).first
+
+                try:
+                    dia_locator.click(
+                        timeout=4000,
+                        force=True,
+                    )
+                except Exception as exc:
+                    print(
+                        f"⚠️ Falha ao repetir "
+                        f"o clique: {exc}"
+                    )
+
+                esperar(page, 1500)
+
+    if not carregou:
         guardar_diagnostico(
             page,
             "timeout_carregamento_aulas",
@@ -773,52 +700,75 @@ def esperar_aulas_da_data(page, data_alvo):
 
         diagnostico = page.evaluate(
             """
-            dataIso => {
-                const elementos = Array.from(
+            parametros => {
+                const texto = (
+                    document.body.innerText || ""
+                );
+
+                const linhas = texto
+                    .split("\\n")
+                    .map(linha =>
+                        linha
+                            .replace(/\\s+/g, " ")
+                            .trim()
+                    )
+                    .filter(Boolean);
+
+                const linhasHorarios =
+                    linhas.filter(linha =>
+                        /\\b\\d{1,2}:\\d{2}\\b/.test(
+                            linha
+                        )
+                    );
+
+                const controlos = Array.from(
                     document.querySelectorAll(
-                        "[onclick]"
+                        "button, a, [onclick], "
+                        + "[role='button']"
                     )
                 )
                 .map(elemento => ({
-                    tag:
-                        elemento.tagName,
-                    texto:
-                        (
-                            elemento.textContent || ""
-                        )
-                        .replace(/\\s+/g, " ")
-                        .trim()
-                        .substring(0, 180),
-                    onclick:
-                        (
-                            elemento.getAttribute(
-                                "onclick"
-                            ) || ""
-                        ).substring(0, 500)
+                    tag: elemento.tagName,
+                    texto: (
+                        elemento.innerText
+                        || elemento.value
+                        || ""
+                    )
+                    .replace(/\\s+/g, " ")
+                    .trim()
+                    .substring(0, 150),
+                    onclick: (
+                        elemento.getAttribute(
+                            "onclick"
+                        ) || ""
+                    ).substring(0, 500)
                 }))
                 .filter(item => {
                     return (
-                        item.onclick.includes(
-                            dataIso
-                        ) ||
-                        item.onclick.includes(
+                        item.texto
+                            .toUpperCase()
+                            .includes("INSCREVER")
+                        || item.onclick.includes(
                             "marca_aulas.php"
-                        ) ||
-                        item.onclick.includes(
-                            "wods_dia"
+                        )
+                        || item.onclick.includes(
+                            parametros.data
                         )
                     );
                 });
 
                 return {
-                    data:
-                        dataIso,
-                    elementos:
-                        elementos.slice(0, 100)
+                    data: parametros.data,
+                    horarios:
+                        linhasHorarios.slice(0, 100),
+                    controlos:
+                        controlos.slice(0, 100)
                 };
             }
             """,
-            data_iso,
+            {
+                "data": data_iso,
+            },
         )
 
         print(
@@ -827,24 +777,21 @@ def esperar_aulas_da_data(page, data_alvo):
         )
 
         raise RuntimeError(
-            f"A Regibox não terminou de carregar "
-            f"as aulas de {data_iso} "
-            "em 20 segundos."
+            f"A Regibox não apresentou "
+            f"a aula das {HORA_ALVO} "
+            f"para {data_iso} após quatro tentativas."
         )
 
-    esperar(
-        page,
-        1500,
+    esperar(page, 1500)
+
+    texto_pagina = normalizar_texto(
+        page.locator("body").inner_text()
     )
 
-    total = page.locator(
-        f"[onclick*='marca_aulas.php']"
-        f"[onclick*='data={data_iso}']"
-    ).count()
-
     print(
-        f"✅ Painel carregado para {data_iso}. "
-        f"Controlos associados à data: {total}."
+        f"✅ Painel carregado. "
+        f"Horário {HORA_ALVO} presente: "
+        f"{HORA_ALVO in texto_pagina}."
     )
 
 
@@ -852,51 +799,49 @@ def confirmar_data_carregada(page, data_alvo):
     dia = data_alvo.day
     mes = MESES_PT[data_alvo.month]
     ano = data_alvo.year
-    data_iso = data_alvo.strftime(
-        "%Y-%m-%d"
+    data_iso = data_alvo.strftime("%Y-%m-%d")
+
+    texto_pagina = normalizar_texto(
+        page.locator("body").inner_text()
     )
 
-    padrao_cabecalho = re.compile(
-        rf"\b{dia}\s+DE\s+"
-        rf"{re.escape(mes)}\s+DE\s+"
-        rf"{ano}\b",
-        re.IGNORECASE,
+    cabecalho_esperado = (
+        f"{dia} DE {mes} DE {ano}"
     )
 
-    try:
-        cabecalho = page.get_by_text(
-            padrao_cabecalho
-        ).first
+    tem_cabecalho = (
+        cabecalho_esperado in texto_pagina
+    )
 
-        if cabecalho.is_visible(
-            timeout=3000
-        ):
-            print(
-                f"✅ O cabeçalho confirma "
-                f"{dia} de {mes.lower()} "
-                f"de {ano}."
-            )
+    tem_hora = (
+        HORA_ALVO in texto_pagina
+    )
 
-            return True
-
-    except Exception:
-        pass
-
-    controlos_data = page.locator(
-        f"[onclick*='marca_aulas.php']"
-        f"[onclick*='data={data_iso}']"
+    botoes_inscrever = page.locator(
+        "button:has-text('INSCREVER'), "
+        "button.buts_inscrever, "
+        "[onclick*='marca_aulas.php']"
     )
 
     try:
-        total = controlos_data.count()
+        total_botoes = botoes_inscrever.count()
     except Exception:
-        total = 0
+        total_botoes = 0
 
-    if total > 0:
+    print(
+        f"🔎 Confirmação da data: "
+        f"cabeçalho={tem_cabecalho} | "
+        f"hora={tem_hora} | "
+        f"controlos={total_botoes}"
+    )
+
+    if tem_hora and (
+        tem_cabecalho
+        or total_botoes > 0
+    ):
         print(
-            f"✅ A data {data_iso} foi confirmada "
-            f"através de {total} controlo(s) "
-            "de aula presentes no HTML."
+            f"✅ As aulas de {data_iso} "
+            "foram carregadas."
         )
 
         return True
@@ -907,11 +852,9 @@ def confirmar_data_carregada(page, data_alvo):
     )
 
     raise RuntimeError(
-        f"O calendário executou "
-        f"wods_dia('{data_iso}'), "
-        "mas não apareceu o cabeçalho "
-        "nem qualquer controlo de aula "
-        "associado à data."
+        f"O clique no dia {dia} foi executado, "
+        f"mas o painel não confirmou as aulas "
+        f"de {data_iso}."
     )
 
 
@@ -920,9 +863,7 @@ def confirmar_data_carregada(page, data_alvo):
 # ============================================================
 
 def localizar_aula(page, data_alvo):
-    data_iso = data_alvo.strftime(
-        "%Y-%m-%d"
-    )
+    data_iso = data_alvo.strftime("%Y-%m-%d")
 
     print(
         f"🔎 PASSO 3: A procurar "
@@ -933,12 +874,9 @@ def localizar_aula(page, data_alvo):
     limpar_marcadores(page)
 
     botoes = page.locator(
-        f"button.buts_inscrever"
-        f"[onclick*='data={data_iso}'], "
-        f"button[onclick*='marca_aulas.php']"
-        f"[onclick*='data={data_iso}'], "
-        f"[onclick*='marca_aulas.php']"
-        f"[onclick*='data={data_iso}']"
+        "button.buts_inscrever, "
+        "button:has-text('INSCREVER'), "
+        "[onclick*='marca_aulas.php']"
     )
 
     try:
@@ -953,14 +891,12 @@ def localizar_aula(page, data_alvo):
 
     diagnostico = []
 
-    for indice in range(min(total, 150)):
+    for indice in range(min(total, 200)):
         botao = botoes.nth(indice)
 
         try:
             onclick = (
-                botao.get_attribute(
-                    "onclick"
-                )
+                botao.get_attribute("onclick")
                 or ""
             )
 
@@ -969,9 +905,7 @@ def localizar_aula(page, data_alvo):
             )
 
             classe = (
-                botao.get_attribute(
-                    "class"
-                )
+                botao.get_attribute("class")
                 or ""
             )
 
@@ -982,7 +916,14 @@ def localizar_aula(page, data_alvo):
                     "erro": str(exc),
                 }
             )
+            continue
 
+        # Se o onclick contém uma data diferente,
+        # não considerar este botão.
+        if (
+            "data=" in onclick
+            and f"data={data_iso}" not in onclick
+        ):
             continue
 
         atual = botao
@@ -1004,8 +945,7 @@ def localizar_aula(page, data_alvo):
             modalidade = next(
                 (
                     nome
-                    for nome
-                    in MODALIDADES_ACEITES
+                    for nome in MODALIDADES_ACEITES
                     if nome in texto_cartao
                 ),
                 None,
@@ -1052,6 +992,13 @@ def localizar_aula(page, data_alvo):
                 except Exception:
                     pass
 
+                if "load_script" not in onclick:
+                    raise RuntimeError(
+                        "A aula correta foi encontrada, "
+                        "mas o botão não contém "
+                        "uma chamada load_script."
+                    )
+
                 url_load_script = extrair_url_load_script(
                     onclick
                 )
@@ -1059,6 +1006,17 @@ def localizar_aula(page, data_alvo):
                 dados_url = analisar_url_inscricao(
                     url_load_script
                 )
+
+                if (
+                    dados_url.get("data")
+                    and dados_url.get("data") != data_iso
+                ):
+                    raise RuntimeError(
+                        "A data do botão encontrado "
+                        "não corresponde à data alvo. "
+                        f"Botão={dados_url.get('data')} | "
+                        f"Alvo={data_iso}"
+                    )
 
                 print(
                     f"✅ Aula encontrada: "
@@ -1095,34 +1053,23 @@ def localizar_aula(page, data_alvo):
                 )
 
                 return {
-                    "modalidade":
-                        modalidade,
-                    "onclick":
-                        onclick,
+                    "modalidade": modalidade,
+                    "onclick": onclick,
                     "url_load_script":
                         url_load_script,
                     "id_aula":
-                        dados_url.get(
-                            "id_aula"
-                        ),
+                        dados_url.get("id_aula"),
                     "data":
-                        dados_url.get(
-                            "data"
-                        ),
+                        dados_url.get("data"),
                     "source":
-                        dados_url.get(
-                            "source"
-                        ),
-                    "classe":
-                        classe,
+                        dados_url.get("source"),
+                    "classe": classe,
                     "texto_cartao":
                         texto_cartao,
                 }
 
             try:
-                atual = atual.locator(
-                    "xpath=.."
-                )
+                atual = atual.locator("xpath=..")
             except Exception:
                 break
 
@@ -1131,17 +1078,14 @@ def localizar_aula(page, data_alvo):
         "erro_aula_nao_encontrada",
     )
 
-    print(
-        "📋 Diagnóstico dos candidatos:"
-    )
+    print("📋 Diagnóstico dos candidatos:")
 
-    for item in diagnostico[:60]:
+    for item in diagnostico[:80]:
         if "erro" in item:
             print(
                 f"   Índice={item['indice']} | "
                 f"Erro={item['erro']}"
             )
-
             continue
 
         print(
@@ -1149,8 +1093,7 @@ def localizar_aula(page, data_alvo):
             f"Índice={item['indice']} | "
             f"Nível={item['nivel']} | "
             f"Hora={item['hora']} | "
-            f"Modalidade="
-            f"{item['modalidade']} | "
+            f"Modalidade={item['modalidade']} | "
             f"Texto={item['texto']}"
         )
 
@@ -1213,19 +1156,11 @@ def analisar_url_inscricao(url):
             + url.lstrip("/")
         )
 
-    parsed = urlparse(
-        url_absoluta
-    )
-
-    parametros = parse_qs(
-        parsed.query
-    )
+    parsed = urlparse(url_absoluta)
+    parametros = parse_qs(parsed.query)
 
     def primeiro(nome):
-        valores = parametros.get(
-            nome,
-            [],
-        )
+        valores = parametros.get(nome, [])
 
         if valores:
             return valores[0]
@@ -1233,25 +1168,18 @@ def analisar_url_inscricao(url):
         return None
 
     return {
-        "id_aula":
-            primeiro("id_aula"),
-        "data":
-            primeiro("data"),
-        "source":
-            primeiro("source"),
-        "ano":
-            primeiro("ano"),
-        "id_rato":
-            primeiro("id_rato"),
-        "plano":
-            primeiro("plano"),
-        "box":
-            primeiro("box"),
+        "id_aula": primeiro("id_aula"),
+        "data": primeiro("data"),
+        "source": primeiro("source"),
+        "ano": primeiro("ano"),
+        "id_rato": primeiro("id_rato"),
+        "plano": primeiro("plano"),
+        "box": primeiro("box"),
     }
 
 
 # ============================================================
-# EXECUTAR A INSCRIÇÃO
+# EXECUTAR INSCRIÇÃO
 # ============================================================
 
 def executar_inscricao_direta(
@@ -1259,15 +1187,13 @@ def executar_inscricao_direta(
     aula,
     data_alvo,
 ):
-    data_iso = data_alvo.strftime(
-        "%Y-%m-%d"
-    )
+    data_iso = data_alvo.strftime("%Y-%m-%d")
+    url_load_script = aula["url_load_script"]
 
-    url_load_script = aula[
-        "url_load_script"
-    ]
-
-    if aula.get("data") != data_iso:
+    if (
+        aula.get("data")
+        and aula.get("data") != data_iso
+    ):
         raise RuntimeError(
             "A data extraída do botão não "
             "corresponde à data alvo. "
@@ -1286,17 +1212,9 @@ def executar_inscricao_direta(
         "a chamada de inscrição da Regibox..."
     )
 
-    print(
-        f"🆔 id_aula={aula['id_aula']}"
-    )
-
-    print(
-        f"📅 data={aula['data']}"
-    )
-
-    print(
-        f"🏋️ modalidade={aula['modalidade']}"
-    )
+    print(f"🆔 id_aula={aula['id_aula']}")
+    print(f"📅 data={data_iso}")
+    print(f"🏋️ modalidade={aula['modalidade']}")
 
     resultado = page.evaluate(
         """
@@ -1332,8 +1250,7 @@ def executar_inscricao_direta(
             } catch (erro) {
                 return {
                     sucesso: false,
-                    erro:
-                        String(erro),
+                    erro: String(erro),
                     stack:
                         erro && erro.stack
                         ? String(erro.stack)
@@ -1343,8 +1260,7 @@ def executar_inscricao_direta(
         }
         """,
         {
-            "url":
-                url_load_script,
+            "url": url_load_script,
         },
     )
 
@@ -1409,14 +1325,10 @@ def executar_inscricao_direta(
 
             raise RuntimeError(
                 "Falhou a chamada load_script "
-                "e também o clique JavaScript "
-                "no botão."
+                "e também o clique no botão."
             )
 
-    esperar(
-        page,
-        4500,
-    )
+    esperar(page, 4500)
 
     guardar_diagnostico(
         page,
@@ -1474,10 +1386,7 @@ def confirmar_modal_se_existir(page):
                 f"aceite: {texto}"
             )
 
-            esperar(
-                page,
-                3000,
-            )
+            esperar(page, 3000)
 
             guardar_diagnostico(
                 page,
@@ -1507,20 +1416,12 @@ def verificar_resultado(
         "o resultado da inscrição..."
     )
 
-    confirmar_modal_se_existir(
-        page
-    )
-
-    esperar(
-        page,
-        2500,
-    )
+    confirmar_modal_se_existir(page)
+    esperar(page, 2500)
 
     try:
         texto_pagina = normalizar_texto(
-            page.locator(
-                "body"
-            ).inner_text()
+            page.locator("body").inner_text()
         )
     except Exception:
         texto_pagina = ""
@@ -1538,8 +1439,7 @@ def verificar_resultado(
 
     encontrados = [
         indicador
-        for indicador
-        in indicadores_sucesso
+        for indicador in indicadores_sucesso
         if indicador in texto_pagina
     ]
 
@@ -1561,9 +1461,7 @@ def verificar_resultado(
     )
 
     try:
-        total_marcador = (
-            botao_alvo.count()
-        )
+        total_marcador = botao_alvo.count()
     except Exception:
         total_marcador = -1
 
@@ -1603,20 +1501,11 @@ def verificar_resultado(
         "08_resultado_inconclusivo",
     )
 
-    print(
-        "⚠️ A chamada foi executada, "
-        "mas não foi possível confirmar "
-        "inequivocamente a resposta final."
+    raise RuntimeError(
+        "A chamada de inscrição foi executada, "
+        "mas a Regibox não confirmou a inscrição "
+        "e o botão INSCREVER continua visível."
     )
-
-    print(
-        f"ℹ️ Aula: {aula['modalidade']} | "
-        f"Data: {data_alvo.strftime('%Y-%m-%d')} | "
-        f"Hora: {HORA_ALVO} | "
-        f"id_aula: {aula['id_aula']}"
-    )
-
-    return True
 
 
 # ============================================================
@@ -1624,9 +1513,7 @@ def verificar_resultado(
 # ============================================================
 
 def executar_marcacao():
-    agora = datetime.now(
-        TIMEZONE
-    )
+    agora = datetime.now(TIMEZONE)
 
     data_alvo = agora + timedelta(
         days=DIAS_ANTECEDENCIA
@@ -1649,8 +1536,7 @@ def executar_marcacao():
     )
 
     print(
-        f"⏰ Horário alvo: "
-        f"{HORA_ALVO}"
+        f"⏰ Horário alvo: {HORA_ALVO}"
     )
 
     if not USERNAME or not PASSWORD:
@@ -1692,10 +1578,7 @@ def executar_marcacao():
         )
 
         page = context.new_page()
-
-        page.set_default_timeout(
-            7000
-        )
+        page.set_default_timeout(7000)
 
         page.on(
             "console",
@@ -1735,27 +1618,16 @@ def executar_marcacao():
                 timeout=30000,
             )
 
-            esperar(
-                page,
-                2000,
-            )
+            esperar(page, 2000)
 
             guardar_diagnostico(
                 page,
                 "01_login",
             )
 
-            selecionar_box(
-                page
-            )
-
-            efetuar_login(
-                page
-            )
-
-            abrir_aulas(
-                page
-            )
+            selecionar_box(page)
+            efetuar_login(page)
+            abrir_aulas(page)
 
             selecionar_dia_calendario(
                 page,
@@ -1810,7 +1682,6 @@ def executar_marcacao():
                         / "trace.zip"
                     )
                 )
-
             except Exception as exc:
                 print(
                     f"⚠️ Não foi possível "
