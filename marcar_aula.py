@@ -1,30 +1,59 @@
+import json
 import os
 import re
 import sys
+import time
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 from zoneinfo import ZoneInfo
 
-from playwright.sync_api import (
-    TimeoutError as PlaywrightTimeoutError,
-    sync_playwright,
+import requests
+from bs4 import BeautifulSoup, Tag
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+
+# ============================================================
+# CONFIGURAÇÃO
+# ============================================================
+
+BASE_URL = "https://www.regibox.pt/app/app_nova/"
+PHP_URL = urljoin(BASE_URL, "php/")
+
+LOGIN_URL = urljoin(
+    PHP_URL,
+    "login/scripts/verifica_acesso.php?lang=pt",
 )
 
+SET_SESSION_URL = urljoin(
+    BASE_URL,
+    "set_session.php",
+)
 
-REGYBOX_URL = "https://www.regibox.pt/app/app_nova/login.php"
-NOME_BOX = "Naval Box"
+AULAS_URL = urljoin(
+    PHP_URL,
+    "aulas/aulas.php",
+)
 
 USERNAME = os.environ.get("REGYBOX_USER", "").strip()
 PASSWORD = os.environ.get("REGYBOX_PASS", "").strip()
 
+# O log da Naval Box mostrou id=80.
+# Pode ser substituído através de um GitHub Secret REGYBOX_BOX_ID.
+BOX_ID = os.environ.get("REGYBOX_BOX_ID", "80").strip()
+
 TIMEZONE = ZoneInfo("Atlantic/Madeira")
 
-# A Regibox abre as inscrições com quatro dias de antecedência.
+# As inscrições abrem com quatro dias de antecedência.
 DIAS_ANTECEDENCIA = 4
+
 HORA_ALVO = "18:25"
 
-# Ordem obrigatória de preferência.
-MODALIDADES_PRIORIDADE = [
+# Prioridade obrigatória.
+PRIORIDADES = [
     "HYROX",
     "HIROX",
     "CROSSFIT",
@@ -32,911 +61,1155 @@ MODALIDADES_PRIORIDADE = [
     "STRENGTH",
 ]
 
+TIMEOUT_SEGUNDOS = 20
 PASTA_DIAGNOSTICO = Path("diagnostico_regybox")
 
+HEADERS = {
+    "Accept": "text/html, */*; q=0.01",
+    "Accept-Language": "pt-PT,pt;q=0.9,en;q=0.8",
+    "DNT": "1",
+    "Referer": BASE_URL,
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0 Safari/537.36"
+    ),
+    "X-Requested-With": "XMLHttpRequest",
+}
 
-def esperar(page, milissegundos=1500):
-    page.wait_for_timeout(milissegundos)
+
+# ============================================================
+# MODELOS
+# ============================================================
+
+@dataclass
+class Aula:
+    nome: str
+    data: str
+    inicio: str
+    fim: str
+    ocupacao_atual: Optional[int]
+    capacidade_maxima: Optional[int]
+    url_inscrever: Optional[str]
+    url_cancelar: Optional[str]
+    inscrito: bool
+    lista_espera: bool
+    texto: str
+
+    @property
+    def aberta(self) -> bool:
+        return bool(self.url_inscrever)
+
+    @property
+    def cheia(self) -> bool:
+        return (
+            self.ocupacao_atual is not None
+            and self.capacidade_maxima is not None
+            and self.ocupacao_atual >= self.capacidade_maxima
+        )
 
 
-def normalizar(texto):
-    return " ".join(
-        (texto or "")
-        .replace("\xa0", " ")
-        .split()
-    ).upper()
+# ============================================================
+# DIAGNÓSTICO
+# ============================================================
 
-
-def guardar_diagnostico(page, nome):
+def preparar_diagnostico() -> None:
     PASTA_DIAGNOSTICO.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    try:
-        page.screenshot(
-            path=str(
-                PASTA_DIAGNOSTICO / f"{nome}.png"
-            ),
-            full_page=True,
-        )
-    except Exception as exc:
-        print(
-            f"⚠️ Não foi possível guardar "
-            f"o screenshot {nome}: {exc}"
-        )
 
-    try:
-        (
-            PASTA_DIAGNOSTICO / f"{nome}.html"
-        ).write_text(
-            page.content(),
-            encoding="utf-8",
-        )
-    except Exception as exc:
-        print(
-            f"⚠️ Não foi possível guardar "
-            f"o HTML {nome}: {exc}"
-        )
+def guardar_texto(nome: str, conteudo: str) -> None:
+    preparar_diagnostico()
 
-    try:
-        texto = page.locator("body").inner_text()
-
-        (
-            PASTA_DIAGNOSTICO / f"{nome}.txt"
-        ).write_text(
-            texto,
-            encoding="utf-8",
-        )
-    except Exception as exc:
-        print(
-            f"⚠️ Não foi possível guardar "
-            f"o texto {nome}: {exc}"
-        )
-
-
-def clicar_primeiro_visivel(locator, timeout=5000):
-    try:
-        total = locator.count()
-    except Exception:
-        return False
-
-    for indice in range(min(total, 30)):
-        elemento = locator.nth(indice)
-
-        try:
-            elemento.wait_for(
-                state="visible",
-                timeout=timeout,
-            )
-
-            elemento.scroll_into_view_if_needed()
-
-            elemento.click(
-                timeout=timeout,
-            )
-
-            return True
-
-        except Exception:
-            continue
-
-    return False
-
-
-def preencher_primeiro_visivel(locator, valor):
-    try:
-        total = locator.count()
-    except Exception:
-        return False
-
-    for indice in range(min(total, 30)):
-        elemento = locator.nth(indice)
-
-        try:
-            if elemento.is_visible():
-                elemento.fill(valor)
-                return True
-        except Exception:
-            continue
-
-    return False
-
-
-def selecionar_box(page):
-    print(
-        f"🔍 A selecionar a Box: "
-        f"{NOME_BOX}..."
-    )
-
-    campos = page.locator(
-        "input[placeholder*='Procura' i], "
-        "input[placeholder*='box' i], "
-        "input[type='text']"
-    )
-
-    try:
-        total = campos.count()
-    except Exception:
-        total = 0
-
-    for indice in range(min(total, 20)):
-        campo = campos.nth(indice)
-
-        try:
-            if not campo.is_visible():
-                continue
-
-            campo.fill(NOME_BOX)
-            esperar(page, 1000)
-
-            opcao = page.get_by_text(
-                NOME_BOX,
-                exact=False,
-            )
-
-            if clicar_primeiro_visivel(
-                opcao,
-                timeout=3000,
-            ):
-                print("✅ Box selecionada.")
-                esperar(page, 1000)
-                return
-
-        except Exception:
-            continue
-
-    print(
-        "ℹ️ A Box pode já estar selecionada."
+    caminho = PASTA_DIAGNOSTICO / nome
+    caminho.write_text(
+        conteudo,
+        encoding="utf-8",
     )
 
 
-def efetuar_login(page):
-    print("🔑 A preencher dados de acesso...")
+def guardar_json(nome: str, conteudo) -> None:
+    preparar_diagnostico()
 
-    utilizador = page.locator(
-        "input[type='email'], "
-        "input[name*='user' i], "
-        "input[name*='email' i], "
-        "input[placeholder*='mail' i]"
-    )
-
-    password = page.locator(
-        "input[type='password'], "
-        "input[name*='pass' i]"
-    )
-
-    if not preencher_primeiro_visivel(
-        utilizador,
-        USERNAME,
-    ):
-        raise RuntimeError(
-            "Campo de utilizador não encontrado."
-        )
-
-    if not preencher_primeiro_visivel(
-        password,
-        PASSWORD,
-    ):
-        raise RuntimeError(
-            "Campo de password não encontrado."
-        )
-
-    print("🚀 A efetuar Login...")
-
-    botao_login = page.locator(
-        "button:has-text('LOGIN'), "
-        "button:has-text('ENTRAR'), "
-        "input[type='submit'], "
-        "input[value*='LOGIN' i]"
-    )
-
-    if not clicar_primeiro_visivel(
-        botao_login,
-        timeout=5000,
-    ):
-        page.keyboard.press("Enter")
-
-    try:
-        page.wait_for_load_state(
-            "domcontentloaded",
-            timeout=15000,
-        )
-    except PlaywrightTimeoutError:
-        pass
-
-    esperar(page, 3000)
-
-    print(f"🌐 URL após login: {page.url}")
-
-    if "login.php" in page.url.lower():
-        raise RuntimeError(
-            "O login não foi concluído."
-        )
-
-    guardar_diagnostico(
-        page,
-        "02_apos_login",
-    )
-
-
-def abrir_aulas(page):
-    print("📚 PASSO 1: A clicar em AULAS...")
-
-    candidatos = [
-        page.get_by_text(
-            "AULAS",
-            exact=True,
+    caminho = PASTA_DIAGNOSTICO / nome
+    caminho.write_text(
+        json.dumps(
+            conteudo,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
         ),
-        page.get_by_role(
-            "link",
-            name=re.compile(
-                r"^AULAS$",
-                re.IGNORECASE,
-            ),
-        ),
-        page.get_by_role(
-            "button",
-            name=re.compile(
-                r"^AULAS$",
-                re.IGNORECASE,
-            ),
-        ),
-        page.locator(
-            "a:has-text('AULAS'), "
-            "button:has-text('AULAS')"
-        ),
-    ]
-
-    for candidato in candidatos:
-        if clicar_primeiro_visivel(
-            candidato,
-            timeout=3000,
-        ):
-            esperar(page, 3500)
-
-            print(
-                "✅ Calendário de aulas aberto."
-            )
-
-            guardar_diagnostico(
-                page,
-                "03_calendario_aberto",
-            )
-
-            return
-
-    raise RuntimeError(
-        "Não foi possível clicar em AULAS."
+        encoding="utf-8",
     )
 
 
-def selecionar_dia(page, data_alvo):
-    data_iso = data_alvo.strftime("%Y-%m-%d")
-    dia = data_alvo.day
+# ============================================================
+# SESSÃO HTTP
+# ============================================================
 
-    print(
-        f"📅 PASSO 2: A selecionar "
-        f"{data_iso} no calendário..."
-    )
-
-    seletor = (
-        f"[onclick=\"wods_dia('{data_iso}')\"], "
-        f"[onclick*=\"wods_dia('{data_iso}')\"]"
-    )
-
-    elemento = page.locator(seletor).first
-
-    try:
-        elemento.wait_for(
-            state="visible",
-            timeout=10000,
-        )
-
-        print(
-            f"🔧 Elemento encontrado: "
-            f"{elemento.get_attribute('onclick')}"
-        )
-
-        elemento.scroll_into_view_if_needed()
-
-        elemento.click(
-            timeout=7000,
-            force=True,
-        )
-
-        print(
-            f"✅ Dia {dia} selecionado."
-        )
-
-    except Exception as exc:
-        guardar_diagnostico(
-            page,
-            "erro_selecao_dia",
-        )
-
-        raise RuntimeError(
-            f"Não foi possível selecionar "
-            f"o dia {dia}: {exc}"
-        ) from exc
-
-    esperar_lista_aulas(
-        page,
-        data_alvo,
-    )
-
-    guardar_diagnostico(
-        page,
-        "04_dia_carregado",
-    )
-
-
-def esperar_lista_aulas(page, data_alvo):
-    data_iso = data_alvo.strftime("%Y-%m-%d")
-
-    print(
-        f"⏳ A aguardar as aulas "
-        f"de {data_iso}..."
-    )
-
-    for tentativa in range(1, 21):
-        esperar(page, 1000)
-
-        resultado = page.evaluate(
-            """
-            hora => {
-                const painel =
-                    document.querySelector(
-                        "#calendar-events"
-                    );
-
-                if (!painel) {
-                    return {
-                        painel: false,
-                        hora: false,
-                        cartoes: 0
-                    };
-                }
-
-                const texto = (
-                    painel.innerText || ""
-                )
-                .replace(/\\s+/g, " ")
-                .toUpperCase();
-
-                const cartoes =
-                    painel.querySelectorAll(
-                        ".card2, "
-                        + ".round_rect_all_5, "
-                        + "[class*='card']"
-                    ).length;
-
-                return {
-                    painel: true,
-                    hora:
-                        texto.includes(hora),
-                    cartoes: cartoes,
-                    texto:
-                        texto.substring(0, 500)
-                };
-            }
-            """,
-            HORA_ALVO,
-        )
-
-        print(
-            f"🔄 Verificação {tentativa}/20: "
-            f"painel={resultado.get('painel')} | "
-            f"hora={resultado.get('hora')} | "
-            f"cartões={resultado.get('cartoes')}"
-        )
-
-        if (
-            resultado.get("painel")
-            and resultado.get("hora")
-        ):
-            print(
-                f"✅ A lista contém uma aula "
-                f"às {HORA_ALVO}."
-            )
-
-            return
-
-        if tentativa in (5, 10, 15):
-            print(
-                "⚠️ A repetir o clique no dia..."
-            )
-
-            try:
-                data_iso = data_alvo.strftime(
-                    "%Y-%m-%d"
-                )
-
-                page.locator(
-                    f"[onclick*=\"wods_dia('{data_iso}')\"]"
-                ).first.click(
-                    force=True,
-                    timeout=4000,
-                )
-
-            except Exception as exc:
-                print(
-                    f"⚠️ Falha ao repetir clique: "
-                    f"{exc}"
-                )
-
-    guardar_diagnostico(
-        page,
-        "timeout_lista_aulas",
-    )
-
-    raise RuntimeError(
-        f"Não apareceu uma aula às "
-        f"{HORA_ALVO} no painel."
-    )
-
-
-def localizar_aula_prioritaria(page):
-    print(
-        f"🔎 PASSO 3: A procurar aula "
-        f"às {HORA_ALVO}..."
-    )
-
-    resultado = page.evaluate(
-        """
-        parametros => {
-            const painel =
-                document.querySelector(
-                    "#calendar-events"
-                );
-
-            if (!painel) {
-                return {
-                    sucesso: false,
-                    erro:
-                        "#calendar-events não encontrado"
-                };
-            }
-
-            function normalizar(texto) {
-                return (texto || "")
-                    .replace(/\\u00a0/g, " ")
-                    .replace(/\\s+/g, " ")
-                    .trim()
-                    .toUpperCase();
-            }
-
-            function visivel(elemento) {
-                if (!elemento) {
-                    return false;
-                }
-
-                const estilo =
-                    window.getComputedStyle(elemento);
-
-                const rect =
-                    elemento.getBoundingClientRect();
-
-                return (
-                    estilo.display !== "none"
-                    && estilo.visibility !== "hidden"
-                    && rect.width > 0
-                    && rect.height > 0
-                );
-            }
-
-            const elementosHora =
-                Array.from(
-                    painel.querySelectorAll("*")
-                ).filter(elemento => {
-                    const texto =
-                        normalizar(
-                            elemento.textContent
-                        );
-
-                    return (
-                        visivel(elemento)
-                        && texto.includes(
-                            parametros.hora
-                        )
-                    );
-                });
-
-            const candidatos = [];
-
-            for (
-                const elementoHora
-                of elementosHora
-            ) {
-                let atual = elementoHora;
-
-                for (
-                    let nivel = 0;
-                    nivel <= 10 && atual;
-                    nivel++
-                ) {
-                    const texto =
-                        normalizar(
-                            atual.textContent
-                        );
-
-                    if (
-                        texto.length > 0
-                        && texto.length < 1500
-                    ) {
-                        const modalidade =
-                            parametros.prioridades.find(
-                                nome =>
-                                    texto.includes(nome)
-                            );
-
-                        const botao =
-                            Array.from(
-                                atual.querySelectorAll(
-                                    "button, "
-                                    + "a, "
-                                    + "[role='button'], "
-                                    + "[onclick]"
-                                )
-                            ).find(elemento => {
-                                const textoBotao =
-                                    normalizar(
-                                        elemento.innerText
-                                        || elemento.value
-                                        || elemento.textContent
-                                    );
-
-                                return (
-                                    visivel(elemento)
-                                    && textoBotao
-                                        === "INSCREVER"
-                                );
-                            });
-
-                        if (
-                            modalidade
-                            && botao
-                            && texto.includes(
-                                parametros.hora
-                            )
-                        ) {
-                            candidatos.push({
-                                elemento: atual,
-                                botao: botao,
-                                modalidade:
-                                    modalidade,
-                                texto: texto
-                            });
-
-                            break;
-                        }
-                    }
-
-                    atual = atual.parentElement;
-
-                    if (
-                        atual
-                        && atual === painel.parentElement
-                    ) {
-                        break;
-                    }
-                }
-            }
-
-            if (candidatos.length === 0) {
-                return {
-                    sucesso: false,
-                    erro:
-                        "Nenhum cartão compatível",
-                    elementosHora:
-                        elementosHora.length
-                };
-            }
-
-            candidatos.sort((a, b) => {
-                return (
-                    parametros.prioridades.indexOf(
-                        a.modalidade
-                    )
-                    -
-                    parametros.prioridades.indexOf(
-                        b.modalidade
-                    )
-                );
-            });
-
-            const escolhido =
-                candidatos[0];
-
-            escolhido.elemento.setAttribute(
-                "data-rbx-cartao-alvo",
-                "true"
-            );
-
-            escolhido.botao.setAttribute(
-                "data-rbx-inscrever-alvo",
-                "true"
-            );
-
-            escolhido.elemento.scrollIntoView({
-                behavior: "instant",
-                block: "center",
-                inline: "nearest"
-            });
-
-            return {
-                sucesso: true,
-                modalidade:
-                    escolhido.modalidade,
-                texto:
-                    escolhido.texto.substring(
-                        0,
-                        600
-                    ),
-                tagBotao:
-                    escolhido.botao.tagName,
-                classeBotao:
-                    escolhido.botao.className || "",
-                onclick:
-                    escolhido.botao.getAttribute(
-                        "onclick"
-                    ) || null,
-                candidatos:
-                    candidatos.map(item => ({
-                        modalidade:
-                            item.modalidade,
-                        texto:
-                            item.texto.substring(
-                                0,
-                                200
-                            )
-                    }))
-            };
-        }
-        """,
-        {
-            "hora": HORA_ALVO,
-            "prioridades":
-                MODALIDADES_PRIORIDADE,
+def criar_sessao() -> requests.Session:
+    retry = Retry(
+        total=5,
+        connect=5,
+        read=5,
+        status=5,
+        backoff_factor=0.5,
+        status_forcelist={
+            429,
+            500,
+            502,
+            503,
+            504,
+        },
+        allowed_methods={
+            "HEAD",
+            "GET",
+            "POST",
+            "OPTIONS",
         },
     )
 
-    print(
-        f"🔧 Resultado da procura: "
-        f"{resultado}"
+    adaptador = HTTPAdapter(
+        max_retries=retry,
     )
 
-    if not resultado.get("sucesso"):
-        guardar_diagnostico(
-            page,
-            "erro_aula_nao_encontrada",
-        )
+    sessao = requests.Session()
+    sessao.headers.update(HEADERS)
+    sessao.mount("https://", adaptador)
+    sessao.mount("http://", adaptador)
 
-        raise RuntimeError(
-            f"Não foi encontrada uma aula "
-            f"prioritária às {HORA_ALVO}."
-        )
-
-    modalidade = resultado.get(
-        "modalidade"
-    )
-
-    print(
-        f"✅ Aula selecionada: "
-        f"{modalidade} às {HORA_ALVO}."
-    )
-
-    print(
-        f"📋 Cartão: "
-        f"{resultado.get('texto')}"
-    )
-
-    guardar_diagnostico(
-        page,
-        "05_aula_encontrada",
-    )
-
-    return modalidade
+    return sessao
 
 
-def clicar_inscrever(page, modalidade):
-    print(
-        f"🎯 PASSO 4: A inscrever em "
-        f"{modalidade}..."
-    )
-
-    botao = page.locator(
-        "[data-rbx-inscrever-alvo='true']"
-    ).first
-
+def validar_resposta(
+    resposta: requests.Response,
+    contexto: str,
+) -> None:
     try:
-        botao.wait_for(
-            state="visible",
-            timeout=7000,
-        )
-
-        botao.scroll_into_view_if_needed()
-        esperar(page, 500)
-
-        texto_botao = normalizar(
-            botao.inner_text()
-        )
-
-        print(
-            f"🖱️ Botão encontrado: "
-            f"{texto_botao}"
-        )
-
-        botao.click(
-            timeout=7000,
-            force=True,
-        )
-
-        print(
-            "✅ Clique em INSCREVER executado."
-        )
-
-    except Exception as exc:
-        guardar_diagnostico(
-            page,
-            "erro_clique_inscrever",
-        )
-
+        resposta.raise_for_status()
+    except requests.HTTPError as exc:
         raise RuntimeError(
-            f"Não foi possível clicar "
-            f"em INSCREVER: {exc}"
+            f"{contexto}: HTTP "
+            f"{resposta.status_code}"
         ) from exc
 
-    esperar(page, 4000)
+    texto = resposta.text.lower()
 
-    confirmar_modal(page)
+    if "app/app_nova/login.php" in texto:
+        raise RuntimeError(
+            f"{contexto}: a Regibox devolveu "
+            "a página de login; a sessão não é válida."
+        )
 
-    guardar_diagnostico(
-        page,
-        "06_apos_inscricao",
+
+# ============================================================
+# LOGIN
+# ============================================================
+
+def extrair_cookie_regybox(
+    resposta: requests.Response,
+) -> Optional[str]:
+    # Primeira opção: cookie enviado pelo servidor.
+    cookie = resposta.cookies.get(
+        "regybox_user"
     )
 
+    if cookie:
+        return unquote(cookie)
 
-def confirmar_modal(page):
-    candidatos = page.locator(
-        "button:has-text('CONFIRMAR'), "
-        "button:has-text('SIM'), "
-        "button:has-text('OK'), "
-        "button:has-text('ACEITAR'), "
-        "a:has-text('CONFIRMAR')"
+    # Segunda opção: cookie já incorporado na sessão.
+    cookie = resposta.request._cookies.get(
+        "regybox_user"
     )
 
-    try:
-        total = candidatos.count()
-    except Exception:
-        total = 0
+    if cookie:
+        return unquote(cookie)
 
-    for indice in range(min(total, 20)):
-        candidato = candidatos.nth(indice)
+    texto = resposta.text.strip()
 
-        try:
-            if not candidato.is_visible():
-                continue
+    padroes = [
+        r"regybox_user=([^&;\"'\s]+)",
+        r"regybox_user%3D([^&;\"'\s]+)",
+        r"(?:^|&)z=([^&]+)",
+    ]
 
-            texto = normalizar(
-                candidato.inner_text()
+    for padrao in padroes:
+        correspondencia = re.search(
+            padrao,
+            texto,
+            flags=re.IGNORECASE,
+        )
+
+        if correspondencia:
+            return unquote(
+                correspondencia.group(1)
             )
 
-            candidato.click(
-                timeout=3000,
-                force=True,
+    # Compatibilidade com a resposta usada por
+    # implementações antigas da API.
+    try:
+        partes = texto.split("&")[0].split("=")
+
+        if len(partes) >= 3:
+            candidato = unquote(
+                partes[2].strip()
+            )
+
+            if candidato:
+                return candidato
+    except Exception:
+        pass
+
+    return None
+
+
+def efetuar_login(
+    sessao: requests.Session,
+) -> str:
+    print(
+        f"🔐 A autenticar na Regibox "
+        f"(box_id={BOX_ID})..."
+    )
+
+    resposta = sessao.post(
+        LOGIN_URL,
+        data={
+            "id_box": BOX_ID,
+            "login": USERNAME,
+            "password": PASSWORD,
+        },
+        timeout=TIMEOUT_SEGUNDOS,
+    )
+
+    guardar_texto(
+        "01_resposta_login.txt",
+        resposta.text,
+    )
+
+    resposta.raise_for_status()
+
+    texto_normalizado = resposta.text.upper()
+
+    if (
+        "ACESSO NEGADO" in texto_normalizado
+        or "ACCESS DENIED" in texto_normalizado
+    ):
+        raise RuntimeError(
+            "A Regibox recusou o utilizador "
+            "ou a password."
+        )
+
+    regybox_user = extrair_cookie_regybox(
+        resposta
+    )
+
+    if not regybox_user:
+        guardar_json(
+            "01_cookies_login.json",
+            sessao.cookies.get_dict(),
+        )
+
+        raise RuntimeError(
+            "O login respondeu, mas não foi "
+            "possível extrair o cookie regybox_user."
+        )
+
+    # Garantir os cookies usados pelas chamadas internas.
+    sessao.cookies.set(
+        "regybox_user",
+        regybox_user,
+        domain="www.regibox.pt",
+        path="/",
+    )
+
+    sessao.cookies.set(
+        "regybox_boxes",
+        f"*{regybox_user}",
+        domain="www.regibox.pt",
+        path="/",
+    )
+
+    print("✅ Autenticação aceite.")
+
+    print(
+        "🍪 Cookies presentes: "
+        + ", ".join(
+            sorted(sessao.cookies.get_dict())
+        )
+    )
+
+    ativar_sessao(
+        sessao,
+        regybox_user,
+    )
+
+    return regybox_user
+
+
+def ativar_sessao(
+    sessao: requests.Session,
+    regybox_user: str,
+) -> None:
+    print(
+        "🔧 A ativar a sessão interna "
+        "da Naval Box..."
+    )
+
+    resposta = sessao.get(
+        SET_SESSION_URL,
+        params={
+            "z": regybox_user,
+            "y": f"*{regybox_user}",
+            "ignore": "regybox.pt/app/app",
+        },
+        timeout=TIMEOUT_SEGUNDOS,
+    )
+
+    resposta.raise_for_status()
+
+    guardar_texto(
+        "02_resposta_set_session.html",
+        resposta.text,
+    )
+
+    print("✅ Sessão interna ativada.")
+
+
+# ============================================================
+# OBTENÇÃO E PARSING DAS AULAS
+# ============================================================
+
+def timestamp_data(data_alvo) -> int:
+    # Usar meio-dia evita alterações de dia por timezone/DST.
+    instante = datetime(
+        data_alvo.year,
+        data_alvo.month,
+        data_alvo.day,
+        12,
+        0,
+        tzinfo=TIMEZONE,
+    )
+
+    return int(
+        instante.timestamp() * 1000
+    )
+
+
+def obter_html_aulas(
+    sessao: requests.Session,
+    data_alvo,
+    regybox_user: str,
+) -> str:
+    data_iso = data_alvo.isoformat()
+
+    print(
+        f"📡 A obter as aulas de "
+        f"{data_iso} diretamente da Regibox..."
+    )
+
+    resposta = sessao.get(
+        AULAS_URL,
+        params={
+            "valor1": str(
+                timestamp_data(data_alvo)
+            ),
+            "type": "",
+            "source": "mes",
+            "scroll": "s",
+            "box": "",
+            "plano": "0",
+            "z": regybox_user,
+        },
+        timeout=TIMEOUT_SEGUNDOS,
+    )
+
+    validar_resposta(
+        resposta,
+        "Obtenção das aulas",
+    )
+
+    guardar_texto(
+        "03_aulas_resposta.html",
+        resposta.text,
+    )
+
+    print(
+        f"✅ Resposta das aulas recebida "
+        f"({len(resposta.text)} bytes)."
+    )
+
+    return resposta.text
+
+
+def classes_do_elemento(elemento: Tag) -> set[str]:
+    classes = elemento.get(
+        "class",
+        [],
+    )
+
+    if isinstance(classes, str):
+        classes = classes.split()
+
+    return set(classes)
+
+
+def encontrar_div(
+    bloco: Tag,
+    *,
+    align: Optional[str] = None,
+    classe: Optional[str] = None,
+    padrao: Optional[re.Pattern] = None,
+) -> Optional[Tag]:
+    for elemento in bloco.find_all("div"):
+        if (
+            align is not None
+            and elemento.get("align") != align
+        ):
+            continue
+
+        if (
+            classe is not None
+            and classe not in classes_do_elemento(
+                elemento
+            )
+        ):
+            continue
+
+        texto = normalizar_texto(
+            elemento.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        if (
+            padrao is not None
+            and not padrao.search(texto)
+        ):
+            continue
+
+        return elemento
+
+    return None
+
+
+def normalizar_texto(texto: str) -> str:
+    return " ".join(
+        (texto or "")
+        .replace("\xa0", " ")
+        .split()
+    )
+
+
+def extrair_urls_botoes(
+    bloco: Tag,
+) -> tuple[
+    Optional[str],
+    Optional[str],
+]:
+    url_inscrever = None
+    url_cancelar = None
+
+    for botao in bloco.find_all("button"):
+        onclick = botao.get(
+            "onclick",
+            "",
+        )
+
+        urls = re.findall(
+            r"""[^'"\s,(]+\.php(?:\?[^'"\s,)]*)?""",
+            onclick,
+            flags=re.IGNORECASE,
+        )
+
+        for url_bruto in urls:
+            url = urljoin(
+                BASE_URL,
+                url_bruto.replace(
+                    "&amp;",
+                    "&",
+                ),
+            )
+
+            caminho = urlparse(url).path
+
+            prefixo_permitido = (
+                "/app/app_nova/php/aulas/"
+            )
+
+            if not caminho.startswith(
+                prefixo_permitido
+            ):
+                continue
+
+            if caminho.endswith(
+                "/marca_aulas.php"
+            ):
+                url_inscrever = url
+
+            elif caminho.endswith(
+                "/cancela_aula.php"
+            ):
+                url_cancelar = url
+
+    return (
+        url_inscrever,
+        url_cancelar,
+    )
+
+
+def extrair_data_bloco(
+    bloco: Tag,
+    data_fallback: str,
+) -> str:
+    identificador = bloco.get(
+        "id",
+        "",
+    )
+
+    correspondencia = re.fullmatch(
+        r"feed_time_slot(\d+)",
+        identificador,
+    )
+
+    if not correspondencia:
+        return data_fallback
+
+    try:
+        epoch = int(
+            correspondencia.group(1)
+        )
+
+        return datetime.fromtimestamp(
+            epoch,
+            tz=TIMEZONE,
+        ).date().isoformat()
+
+    except (ValueError, OSError):
+        return data_fallback
+
+
+def extrair_capacidade(
+    bloco: Tag,
+) -> tuple[
+    Optional[int],
+    Optional[int],
+]:
+    elemento = encontrar_div(
+        bloco,
+        align="center",
+        classe="col",
+        padrao=re.compile(
+            r"\S+\s+(?:DE|OF)\s+\S+",
+            flags=re.IGNORECASE,
+        ),
+    )
+
+    if elemento is None:
+        return None, None
+
+    texto = normalizar_texto(
+        elemento.get_text(
+            " ",
+            strip=True,
+        )
+    )
+
+    correspondencia = re.search(
+        r"(\d+)\s+(?:DE|OF)\s+(\d+|∞)",
+        texto,
+        flags=re.IGNORECASE,
+    )
+
+    if not correspondencia:
+        return None, None
+
+    atual = int(
+        correspondencia.group(1)
+    )
+
+    maxima_texto = correspondencia.group(2)
+
+    maxima = (
+        None
+        if maxima_texto == "∞"
+        else int(maxima_texto)
+    )
+
+    return atual, maxima
+
+
+def parsear_aulas(
+    html: str,
+    data_alvo: str,
+) -> list[Aula]:
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    blocos = [
+        elemento
+        for elemento in soup.find_all("div")
+        if "filtro0" in classes_do_elemento(
+            elemento
+        )
+    ]
+
+    print(
+        f"🧩 Blocos de aula encontrados: "
+        f"{len(blocos)}"
+    )
+
+    aulas: list[Aula] = []
+
+    for bloco in blocos:
+        nome_elemento = encontrar_div(
+            bloco,
+            align="left",
+            classe="col-50",
+        )
+
+        horario_elemento = encontrar_div(
+            bloco,
+            align="left",
+            classe="col",
+            padrao=re.compile(
+                r"\b\d{1,2}:\d{2}\s*-\s*"
+                r"\d{1,2}:\d{2}\b"
+            ),
+        )
+
+        if (
+            nome_elemento is None
+            or horario_elemento is None
+        ):
+            continue
+
+        nome = normalizar_texto(
+            nome_elemento.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        horario = normalizar_texto(
+            horario_elemento.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        correspondencia_hora = re.search(
+            r"(\d{1,2}:\d{2})\s*-\s*"
+            r"(\d{1,2}:\d{2})",
+            horario,
+        )
+
+        if not correspondencia_hora:
+            continue
+
+        inicio = correspondencia_hora.group(1)
+        fim = correspondencia_hora.group(2)
+
+        ocupacao, capacidade = (
+            extrair_capacidade(bloco)
+        )
+
+        (
+            url_inscrever,
+            url_cancelar,
+        ) = extrair_urls_botoes(bloco)
+
+        texto_bloco = normalizar_texto(
+            bloco.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        inscrito = bool(
+            url_cancelar
+            or bloco.find(
+                "div",
+                class_="ok_color",
+            )
+        )
+
+        lista_espera = bool(
+            bloco.find(
+                "div",
+                class_=re.compile(
+                    r"preloader.*color-orange"
+                ),
+            )
+        )
+
+        aulas.append(
+            Aula(
+                nome=nome,
+                data=extrair_data_bloco(
+                    bloco,
+                    data_alvo,
+                ),
+                inicio=inicio,
+                fim=fim,
+                ocupacao_atual=ocupacao,
+                capacidade_maxima=capacidade,
+                url_inscrever=url_inscrever,
+                url_cancelar=url_cancelar,
+                inscrito=inscrito,
+                lista_espera=lista_espera,
+                texto=texto_bloco,
+            )
+        )
+
+    guardar_json(
+        "04_aulas_parseadas.json",
+        [
+            asdict(aula)
+            for aula in aulas
+        ],
+    )
+
+    return aulas
+
+
+# ============================================================
+# ESCOLHA DA AULA
+# ============================================================
+
+def prioridade_nome(nome: str) -> int:
+    nome_normalizado = nome.upper()
+
+    for indice, prioridade in enumerate(
+        PRIORIDADES
+    ):
+        if prioridade in nome_normalizado:
+            return indice
+
+    return len(PRIORIDADES) + 100
+
+
+def escolher_aula(
+    aulas: list[Aula],
+    data_alvo: str,
+) -> Aula:
+    aulas_horario = [
+        aula
+        for aula in aulas
+        if aula.inicio == HORA_ALVO
+    ]
+
+    print(
+        f"🕒 Aulas encontradas às "
+        f"{HORA_ALVO}: "
+        f"{len(aulas_horario)}"
+    )
+
+    for aula in aulas_horario:
+        estado = (
+            "INSCRITO"
+            if aula.inscrito
+            else (
+                "ABERTA"
+                if aula.aberta
+                else "FECHADA"
+            )
+        )
+
+        print(
+            f"   • {aula.nome} | "
+            f"{aula.inicio}-{aula.fim} | "
+            f"{aula.ocupacao_atual}/"
+            f"{aula.capacidade_maxima} | "
+            f"{estado}"
+        )
+
+    candidatas = [
+        aula
+        for aula in aulas_horario
+        if prioridade_nome(aula.nome)
+        < len(PRIORIDADES) + 100
+    ]
+
+    if not candidatas:
+        raise RuntimeError(
+            f"Não existe HYROX, CROSSFIT ou "
+            f"STRENGHT às {HORA_ALVO} "
+            f"em {data_alvo}."
+        )
+
+    candidatas.sort(
+        key=lambda aula: prioridade_nome(
+            aula.nome
+        )
+    )
+
+    # Caso já esteja inscrito numa aula
+    # compatível às 18:25, não tentar outra.
+    inscritas = [
+        aula
+        for aula in candidatas
+        if aula.inscrito
+        or aula.lista_espera
+    ]
+
+    if inscritas:
+        escolhida = inscritas[0]
+
+        print(
+            f"🎉 Já está inscrito em "
+            f"{escolhida.nome} às "
+            f"{HORA_ALVO}."
+        )
+
+        return escolhida
+
+    abertas = [
+        aula
+        for aula in candidatas
+        if aula.aberta
+    ]
+
+    if not abertas:
+        resumo = [
+            {
+                "nome": aula.nome,
+                "inicio": aula.inicio,
+                "ocupacao": (
+                    aula.ocupacao_atual,
+                    aula.capacidade_maxima,
+                ),
+                "cheia": aula.cheia,
+                "aberta": aula.aberta,
+            }
+            for aula in candidatas
+        ]
+
+        guardar_json(
+            "05_aulas_sem_inscricao.json",
+            resumo,
+        )
+
+        raise RuntimeError(
+            "Foram encontradas aulas às "
+            f"{HORA_ALVO}, mas nenhuma está "
+            "aberta para inscrição."
+        )
+
+    escolhida = abertas[0]
+
+    print(
+        f"🏆 Aula selecionada: "
+        f"{escolhida.nome} "
+        f"({escolhida.inicio}-"
+        f"{escolhida.fim})."
+    )
+
+    print(
+        "📋 Prioridade aplicada: "
+        "HYROX → CROSSFIT → STRENGHT."
+    )
+
+    return escolhida
+
+
+# ============================================================
+# INSCRIÇÃO
+# ============================================================
+
+def validar_url_inscricao(
+    url: str,
+    data_alvo: str,
+) -> None:
+    parsed = urlparse(url)
+
+    if parsed.scheme != "https":
+        raise RuntimeError(
+            "O URL de inscrição não usa HTTPS."
+        )
+
+    if parsed.netloc != "www.regibox.pt":
+        raise RuntimeError(
+            "O URL de inscrição aponta para "
+            "um domínio inesperado."
+        )
+
+    if parsed.path != (
+        "/app/app_nova/php/aulas/"
+        "marca_aulas.php"
+    ):
+        raise RuntimeError(
+            "O URL de inscrição aponta para "
+            "um endpoint inesperado."
+        )
+
+    parametros = parse_qs(
+        parsed.query
+    )
+
+    data_url = parametros.get(
+        "data",
+        [None],
+    )[0]
+
+    if (
+        data_url is not None
+        and data_url != data_alvo
+    ):
+        raise RuntimeError(
+            "A data do URL de inscrição não "
+            "corresponde à data alvo: "
+            f"{data_url} != {data_alvo}"
+        )
+
+    if not parametros.get("id_aula"):
+        raise RuntimeError(
+            "O URL de inscrição não contém "
+            "id_aula."
+        )
+
+
+def extrair_mensagem_resposta(
+    html: str,
+) -> Optional[str]:
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    for script in soup.find_all("script"):
+        texto = script.get_text(
+            " ",
+            strip=False,
+        )
+
+        correspondencias = [
+            r"""msg_toast_icon\s*\(\s*["'](.+?)["']\s*,""",
+            r"""msg_toast\s*\(\s*["'](.+?)["']""",
+            r"""alert\s*\(\s*["'](.+?)["']\s*\)""",
+        ]
+
+        for padrao in correspondencias:
+            correspondencia = re.search(
+                padrao,
+                texto,
+                flags=re.IGNORECASE
+                | re.DOTALL,
+            )
+
+            if correspondencia:
+                return normalizar_texto(
+                    correspondencia.group(1)
+                )
+
+    texto = normalizar_texto(
+        soup.get_text(
+            " ",
+            strip=True,
+        )
+    )
+
+    return texto or None
+
+
+def executar_inscricao(
+    sessao: requests.Session,
+    aula: Aula,
+    data_alvo: str,
+) -> str:
+    if aula.inscrito or aula.lista_espera:
+        return (
+            f"Já inscrito em {aula.nome} "
+            f"às {aula.inicio}"
+        )
+
+    if not aula.url_inscrever:
+        raise RuntimeError(
+            "A aula selecionada não possui "
+            "URL de inscrição."
+        )
+
+    validar_url_inscricao(
+        aula.url_inscrever,
+        data_alvo,
+    )
+
+    parsed = urlparse(
+        aula.url_inscrever
+    )
+
+    parametros_seguros = parse_qs(
+        parsed.query
+    )
+
+    print(
+        "🎯 A enviar a inscrição diretamente "
+        "para a Regibox..."
+    )
+
+    print(
+        f"🆔 id_aula="
+        f"{parametros_seguros.get('id_aula', ['?'])[0]}"
+    )
+
+    print(
+        f"🏋️ modalidade={aula.nome}"
+    )
+
+    print(
+        f"📅 data={data_alvo}"
+    )
+
+    resposta = sessao.get(
+        aula.url_inscrever,
+        timeout=TIMEOUT_SEGUNDOS,
+    )
+
+    validar_resposta(
+        resposta,
+        "Inscrição",
+    )
+
+    guardar_texto(
+        "06_resposta_inscricao.html",
+        resposta.text,
+    )
+
+    mensagem = extrair_mensagem_resposta(
+        resposta.text
+    )
+
+    if mensagem:
+        print(
+            f"💬 Resposta Regibox: {mensagem}"
+        )
+
+    texto_upper = normalizar_texto(
+        resposta.text
+    ).upper()
+
+    sinais_falha = [
+        "ACESSO NEGADO",
+        "NÃO FOI POSSÍVEL",
+        "NAO FOI POSSIVEL",
+        "ERRO",
+        "ERROR",
+        "JÁ ESTÁS INSCRITO NOUTRA",
+        "JA ESTAS INSCRITO NOUTRA",
+    ]
+
+    for sinal in sinais_falha:
+        if sinal in texto_upper:
+            raise RuntimeError(
+                "A Regibox respondeu com uma "
+                f"indicação de falha: {mensagem or sinal}"
+            )
+
+    return mensagem or (
+        "Pedido de inscrição aceite "
+        "pela Regibox"
+    )
+
+
+# ============================================================
+# CONFIRMAÇÃO FINAL
+# ============================================================
+
+def confirmar_inscricao(
+    sessao: requests.Session,
+    data_alvo,
+    regybox_user: str,
+    aula_escolhida: Aula,
+) -> bool:
+    print(
+        "🔎 A confirmar a inscrição "
+        "através de uma nova leitura..."
+    )
+
+    time.sleep(2)
+
+    html = obter_html_aulas(
+        sessao,
+        data_alvo,
+        regybox_user,
+    )
+
+    aulas = parsear_aulas(
+        html,
+        data_alvo.isoformat(),
+    )
+
+    for aula in aulas:
+        mesma_modalidade = (
+            aula.nome.upper()
+            == aula_escolhida.nome.upper()
+        )
+
+        mesmo_horario = (
+            aula.inicio
+            == aula_escolhida.inicio
+        )
+
+        if (
+            mesma_modalidade
+            and mesmo_horario
+            and (
+                aula.inscrito
+                or aula.lista_espera
+            )
+        ):
+            estado = (
+                "lista de espera"
+                if aula.lista_espera
+                else "inscrito"
             )
 
             print(
-                f"✅ Confirmação aceite: "
-                f"{texto}"
+                f"🎉 CONFIRMADO: {estado} em "
+                f"{aula.nome}, às "
+                f"{aula.inicio}."
             )
 
-            esperar(page, 3000)
+            guardar_json(
+                "07_confirmacao_sucesso.json",
+                asdict(aula),
+            )
+
             return True
 
-        except Exception:
-            continue
+    guardar_json(
+        "07_confirmacao_falhou.json",
+        [
+            asdict(aula)
+            for aula in aulas
+            if aula.inicio == HORA_ALVO
+        ],
+    )
 
     return False
 
 
-def verificar_resultado(page, modalidade):
-    print(
-        "🔎 PASSO 5: A verificar "
-        "o resultado..."
-    )
+# ============================================================
+# EXECUÇÃO
+# ============================================================
 
-    try:
-        painel = page.locator(
-            "#calendar-events"
-        )
+def executar() -> int:
+    preparar_diagnostico()
 
-        texto = normalizar(
-            painel.inner_text()
-        )
-    except Exception:
-        texto = normalizar(
-            page.locator("body").inner_text()
-        )
-
-    indicadores = [
-        "CANCELAR",
-        "DESMARCAR",
-        "INSCRITO",
-        "INSCRITA",
-        "EM LISTA DE ESPERA",
-        "LISTA DE ESPERA",
-        "INSCRIÇÃO EFETUADA",
-        "INSCRICAO EFETUADA",
-    ]
-
-    encontrados = [
-        indicador
-        for indicador in indicadores
-        if indicador in texto
-    ]
-
-    if encontrados:
-        print(
-            "🎉 Inscrição confirmada: "
-            f"{', '.join(encontrados)}"
-        )
-
-        guardar_diagnostico(
-            page,
-            "07_sucesso_confirmado",
-        )
-
-        return
-
-    botao = page.locator(
-        "[data-rbx-inscrever-alvo='true']"
-    )
-
-    try:
-        ainda_visivel = (
-            botao.count() > 0
-            and botao.first.is_visible()
-        )
-    except Exception:
-        ainda_visivel = False
-
-    if not ainda_visivel:
-        print(
-            "✅ O botão INSCREVER deixou "
-            "de estar visível."
-        )
-
-        guardar_diagnostico(
-            page,
-            "07_acao_enviada",
-        )
-
-        return
-
-    guardar_diagnostico(
-        page,
-        "07_resultado_inconclusivo",
-    )
-
-    raise RuntimeError(
-        f"A inscrição em {modalidade} "
-        "não foi confirmada e o botão "
-        "INSCREVER continua visível."
-    )
-
-
-def executar_marcacao():
     agora = datetime.now(TIMEZONE)
-
-    data_alvo = agora + timedelta(
-        days=DIAS_ANTECEDENCIA
-    )
+    data_alvo = (
+        agora + timedelta(
+            days=DIAS_ANTECEDENCIA
+        )
+    ).date()
 
     print(
         f"[{agora.strftime('%H:%M:%S')}] "
-        "🚀 A iniciar o robô de marcação..."
+        "🚀 A iniciar o robô Regibox HTTP..."
     )
 
     print(
@@ -945,8 +1218,7 @@ def executar_marcacao():
     )
 
     print(
-        f"📅 Data alvo "
-        f"(+{DIAS_ANTECEDENCIA} dias): "
+        f"📅 Data alvo (+4 dias): "
         f"{data_alvo.strftime('%d/%m/%Y')}"
     )
 
@@ -967,133 +1239,113 @@ def executar_marcacao():
 
         return 2
 
-    PASTA_DIAGNOSTICO.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(
-            headless=True,
-            args=[
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-            ],
+    if not BOX_ID.isdigit():
+        print(
+            "❌ REGYBOX_BOX_ID deve ser "
+            "um número."
         )
 
-        context = browser.new_context(
-            viewport={
-                "width": 1440,
-                "height": 1000,
-            },
-            locale="pt-PT",
-            timezone_id="Atlantic/Madeira",
+        return 2
+
+    sessao = criar_sessao()
+
+    try:
+        regybox_user = efetuar_login(
+            sessao
         )
 
-        context.tracing.start(
-            screenshots=True,
-            snapshots=True,
-            sources=True,
+        html = obter_html_aulas(
+            sessao,
+            data_alvo,
+            regybox_user,
         )
 
-        page = context.new_page()
-        page.set_default_timeout(7000)
-
-        page.on(
-            "console",
-            lambda mensagem: print(
-                f"🌐 CONSOLE "
-                f"{mensagem.type}: "
-                f"{mensagem.text}"
-            ),
+        aulas = parsear_aulas(
+            html,
+            data_alvo.isoformat(),
         )
 
-        page.on(
-            "pageerror",
-            lambda erro: print(
-                f"💥 JAVASCRIPT: {erro}"
-            ),
+        if not aulas:
+            raise RuntimeError(
+                "A Regibox não devolveu "
+                "blocos de aulas reconhecíveis."
+            )
+
+        aula = escolher_aula(
+            aulas,
+            data_alvo.isoformat(),
         )
 
-        try:
+        if aula.inscrito or aula.lista_espera:
             print(
-                "🔐 A abrir a página de login..."
+                "✅ Não é necessário enviar "
+                "uma nova inscrição."
             )
 
-            page.goto(
-                REGYBOX_URL,
-                wait_until="domcontentloaded",
-                timeout=30000,
-            )
-
-            esperar(page, 2000)
-
-            guardar_diagnostico(
-                page,
-                "01_login",
-            )
-
-            selecionar_box(page)
-            efetuar_login(page)
-            abrir_aulas(page)
-            selecionar_dia(page, data_alvo)
-
-            modalidade = localizar_aula_prioritaria(
-                page
-            )
-
-            clicar_inscrever(
-                page,
-                modalidade,
-            )
-
-            verificar_resultado(
-                page,
-                modalidade,
-            )
-
-            print(
-                f"🎉 PROCESSO CONCLUÍDO: "
-                f"{modalidade}, "
-                f"{data_alvo.strftime('%d/%m/%Y')} "
-                f"às {HORA_ALVO}."
+            guardar_json(
+                "07_ja_inscrito.json",
+                asdict(aula),
             )
 
             return 0
 
-        except Exception as exc:
-            print(
-                f"❌ ERRO: "
-                f"{type(exc).__name__}: "
-                f"{exc}"
+        mensagem = executar_inscricao(
+            sessao,
+            aula,
+            data_alvo.isoformat(),
+        )
+
+        print(
+            f"✅ Pedido enviado: {mensagem}"
+        )
+
+        if not confirmar_inscricao(
+            sessao,
+            data_alvo,
+            regybox_user,
+            aula,
+        ):
+            raise RuntimeError(
+                "O pedido foi enviado, mas uma "
+                "nova leitura não confirmou a "
+                "inscrição nem a lista de espera."
             )
 
-            guardar_diagnostico(
-                page,
-                "99_erro_final",
-            )
+        print(
+            "🎉 PROCESSO CONCLUÍDO: "
+            f"{aula.nome}, "
+            f"{data_alvo.strftime('%d/%m/%Y')} "
+            f"às {HORA_ALVO}."
+        )
 
-            return 1
+        return 0
 
-        finally:
-            try:
-                context.tracing.stop(
-                    path=str(
-                        PASTA_DIAGNOSTICO
-                        / "trace.zip"
-                    )
+    except Exception as exc:
+        erro = (
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        print(f"❌ ERRO: {erro}")
+
+        guardar_texto(
+            "99_erro_final.txt",
+            erro,
+        )
+
+        guardar_json(
+            "99_cookies_presentes.json",
+            {
+                "nomes": sorted(
+                    sessao.cookies.get_dict()
                 )
-            except Exception as exc:
-                print(
-                    f"⚠️ Não foi possível "
-                    f"guardar o trace: {exc}"
-                )
+            },
+        )
 
-            context.close()
-            browser.close()
+        return 1
+
+    finally:
+        sessao.close()
 
 
 if __name__ == "__main__":
-    sys.exit(
-        executar_marcacao()
-    )
+    sys.exit(executar())
