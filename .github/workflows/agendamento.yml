@@ -35,9 +35,11 @@ jobs:
         run: |
           python marcar_aula.py
 
-      - name: Guardar Foto do Ecrã
+      - name: Guardar Diagnóstico RegyBox
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: regybox-screenshot
-          path: ecra_regybox.png
+          name: regybox-diagnostico-${{ github.run_number }}
+          path: diagnostico_regybox/
+          if-no-files-found: warn
+          retention-days: 7
