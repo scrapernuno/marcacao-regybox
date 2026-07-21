@@ -60,6 +60,10 @@ def executar_marcacao():
         except Exception as e:
             print(f"⚠️ Seleção de dia: {e}")
 
+        # Faz scroll até ao fim da lista para carregar os horários do fim do dia
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        page.wait_for_timeout(1000)
+
         # Tentar Inscrição por ordem de prioridade
         aula_marcada = False
 
@@ -72,6 +76,8 @@ def executar_marcacao():
             bloco_aula = page.locator("xpath=//*[contains(@class,'card') or contains(@class,'aula') or contains(@class,'row') or self::div]").filter(has_text=modalidade).filter(has_text=HORARIO_TARGET).first
 
             if bloco_aula.count() > 0:
+                # Faz scroll até ao bloco da aula encontrada
+                bloco_aula.scroll_into_view_if_needed()
                 botao_inscrever = bloco_aula.locator("*:has-text('INSCREVER')").first
 
                 if botao_inscrever.is_visible():
@@ -80,7 +86,7 @@ def executar_marcacao():
                     page.wait_for_timeout(3000)
 
                     conteudo = page.content()
-                    if "sucesso" in conteudo.lower() or "marcada" in conteudo.lower() or "cancelar" in conteudo.lower():
+                    if "sucesso" in conteudo.lower() or "marcada" in conteudo.lower() or "cancelar" in conteudo.lower() or "estás inscrito" in conteudo.lower():
                         print(f"🎉 SUCESSO: Inscrição garantida na aula de {modalidade} às {HORARIO_TARGET}!")
                     else:
                         print(f"⚠️ Botão clicado para {modalidade}!")
