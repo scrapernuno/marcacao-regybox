@@ -9,14 +9,14 @@ NOME_BOX = "Naval Box"
 USERNAME = os.environ.get("REGYBOX_USER", "")
 PASSWORD = os.environ.get("REGYBOX_PASS", "")
 
-HORARIO_TARGET = "18:25"
+# Horário alvo atualizado para as 18:35
+HORARIO_TARGET = "18:35"
 AULAS_PRIORIDADE = ["HYROX", "HIROX", "CROSSFIT", "STRENGHT", "STRENGTH"]
 
 def executar_marcacao():
-    # Garantir cálculo exato da data alvo no fuso de Portugal
-    # Se UTC for diferente, ajustamos manualmente +3 dias a contar do dia atual local
+    # Cálculo da data no fuso de Portugal (UTC+1 WEST)
     agora_utc = datetime.datetime.now(datetime.timezone.utc)
-    agora_pt = agora_utc + datetime.timedelta(hours=1) # WEST (UTC+1)
+    agora_pt = agora_utc + datetime.timedelta(hours=1) 
     
     data_alvo = agora_pt + datetime.timedelta(days=3)
     dia_alvo = str(data_alvo.day)
@@ -24,6 +24,7 @@ def executar_marcacao():
     print(f"[{agora_pt.strftime('%H:%M:%S')}] 🚀 A iniciar o robô de marcação...")
     print(f"📅 Data atual PT: {agora_pt.strftime('%d/%m/%Y')}")
     print(f"📅 Data alvo (+3 dias): {data_alvo.strftime('%d/%m/%Y')} (Procurando dia {dia_alvo})")
+    print(f"⏰ Horário pretendido: {HORARIO_TARGET}")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -47,40 +48,38 @@ def executar_marcacao():
         try:
             botao_aulas = page.locator("a[onclick*='calendario_aulas']").first
             if botao_aulas.is_visible():
-                print("MAPA: A abrir calendário de aulas...")
+                print("🗺️ A abrir calendário de aulas...")
                 botao_aulas.click()
                 page.wait_for_timeout(2000)
         except Exception as e:
             print(f"Aviso navegação aulas: {e}")
 
         # Clicar no dia (+3 dias)
-        print(f"📅 A tentar selecionar o dia {dia_alvo} no calendário...")
+        print(f"📅 A selecionar o dia {dia_alvo} no calendário...")
         try:
-            # Procura o dia no calendário da aplicação
             seletor_dia = page.locator(f"xpath=//td[not(contains(@class,'disabled'))]//span[text()='{dia_alvo}'] | //div[contains(@class,'day')]//text()[normalize-space()='{dia_alvo}']/parent::*").first
             if seletor_dia.is_visible():
                 seletor_dia.click(force=True)
                 print(f"✅ Clique executado no dia {dia_alvo}!")
                 page.wait_for_timeout(3000)
             else:
-                print(f"⚠️ Dia {dia_alvo} não estava diretamente visível/clicável no calendário.")
+                print(f"⚠️ Dia {dia_alvo} não estava visível no calendário.")
         except Exception as e:
             print(f"⚠️ Erro ao clicar no dia: {e}")
 
-        # Scroll para garantir que a tarde é carregada
+        # Scroll para carregar a tarde toda
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(1500)
 
         aula_marcada = False
 
-        # Tenta localizar a aula por prioridade
+        # Tenta localizar a aula das 18:35 por prioridade
         for modalidade in AULAS_PRIORIDADE:
             if aula_marcada:
                 break
 
             print(f"🔎 A procurar no ecrã: {modalidade} às {HORARIO_TARGET}...")
 
-            # Procura por qualquer bloco que tenha o id feed_time_slot ou contenha o texto
             slots = page.locator("div[id*='feed_time_slot'], div.card2, div[class*='row']").filter(has_text=HORARIO_TARGET).filter(has_text=modalidade)
 
             if slots.count() > 0:
@@ -88,8 +87,7 @@ def executar_marcacao():
                 slot.scroll_into_view_if_needed()
                 texto_slot = slot.inner_text().upper()
 
-                print(f"💡 Encontrada aula de {modalidade}! Conteúdo do card:")
-                print(f"--- {texto_slot.replace(chr(10), ' ')} ---")
+                print(f"💡 Encontrada aula de {modalidade} ({HORARIO_TARGET})!")
 
                 if "CANCELAR" in texto_slot or "INSCRITO" in texto_slot:
                     print(f"🎉 JÁ ESTÁS INSCRITO em {modalidade} às {HORARIO_TARGET}!")
@@ -107,7 +105,7 @@ def executar_marcacao():
                     if "cancelar" in conteudo_pos or "inscrito" in conteudo_pos or "sucesso" in conteudo_pos:
                         print(f"🎉 SUCESSO CONFIRMADO: Inscrição efetuada em {modalidade} às {HORARIO_TARGET}!")
                     else:
-                        print(f"⚠️ Clique efetuado no botão de {modalidade}. Verifique no RegyBox.")
+                        print(f"⚠️ Clique efetuado no botão de {modalidade}. Verifica no RegyBox.")
                     aula_marcada = True
                     break
                 else:
@@ -115,11 +113,11 @@ def executar_marcacao():
 
         # Recurso genérico se não encontrou pela prioridade
         if not aula_marcada:
-            print("🔄 A tentar encontrar QUALQUER botão INSCREVER próximo das 18:25...")
-            botoes_1825 = page.locator(f"xpath=//div[contains(., '{HORARIO_TARGET}')]//button[contains(., 'INSCREVER') or contains(@class, 'buts_inscrever')]")
-            if botoes_1825.count() > 0:
-                print("🎯 Botão genérico das 18:25 localizado! A clicar...")
-                botoes_1825.first.click(force=True)
+            print(f"🔄 A tentar encontrar QUALQUER botão INSCREVER próximo das {HORARIO_TARGET}...")
+            botoes_alvo = page.locator(f"xpath=//div[contains(., '{HORARIO_TARGET}')]//button[contains(., 'INSCREVER') or contains(@class, 'buts_inscrever')]")
+            if botoes_alvo.count() > 0:
+                print(f"🎯 Botão genérico das {HORARIO_TARGET} localizado! A clicar...")
+                botoes_alvo.first.click(force=True)
                 page.wait_for_timeout(3000)
                 print("🎉 Clique de recurso executado com sucesso!")
                 aula_marcada = True
