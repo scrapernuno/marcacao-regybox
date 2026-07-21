@@ -1,33 +1,12 @@
-name: Marcacao RegyBox
-
-on:
-  schedule:
-    # 17:34 UTC = 18:34 na Madeira no horário de verão.
-    - cron: '34 17 * * 1-5'
-
-  workflow_dispatch:
-
-jobs:
-  marcar:
-    runs-on: ubuntu-latest
-
-    env:
-      TZ: Atlantic/Madeira
-      PYTHONUNBUFFERED: "1"
-
-    steps:
-      - name: Checkout do Repositório
-        uses: actions/checkout@v4.2.2
-
-      - name: Configurar Python
-        uses: actions/setup-python@v5.3.0
-        with:
-          python-version: "3.11"
-
       - name: Instalar Dependências
         run: |
           python -m pip install --upgrade pip
-          python -m pip install requests beautifulsoup4 urllib3
+          python -m pip install playwright requests beautifulsoup4 urllib3
+
+      - name: Instalar Chromium
+        run: |
+          python -m playwright install chromium
+          python -m playwright install-deps chromium
 
       - name: Executar Script de Marcação
         id: marcacao
@@ -35,22 +14,5 @@ jobs:
         env:
           REGYBOX_USER: ${{ secrets.REGYBOX_USER }}
           REGYBOX_PASS: ${{ secrets.REGYBOX_PASS }}
-          REGYBOX_BOX_ID: ${{ secrets.REGYBOX_BOX_ID }}
         run: |
           python marcar_aula.py
-
-      - name: Guardar Diagnóstico RegyBox
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: regybox-diagnostico-${{ github.run_number }}
-          path: diagnostico_regybox/
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Confirmar Resultado da Marcação
-        if: steps.marcacao.outcome == 'failure'
-        run: |
-          echo "::error::A marcação falhou."
-          echo "::error::Consulte o artefacto regybox-diagnostico-${{ github.run_number }}."
-          exit 1
