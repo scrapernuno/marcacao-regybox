@@ -54,11 +54,20 @@ def executar_marcacao():
 
         # Passo 2: Preencher E-mail e Password
         print("🔑 A preencher dados de acesso...")
-        page.locator("input[type='email'], input[placeholder*='e-mail'], input[name*='user']").first.fill(USERNAME)
-        page.locator("input[type='password'], input[placeholder*='password'], input[name*='pass']").first.fill(PASSWORD)
+        campo_email = page.locator("input[type='email'], input[placeholder*='e-mail'], input[name*='user']").first
+        campo_email.fill(USERNAME)
         
-        # Clicar no botão LOGIN
-        page.locator("button:has-text('LOGIN'), input[value*='LOGIN'], text='LOGIN'").first.click()
+        campo_pass = page.locator("input[type='password'], input[placeholder*='password'], input[name*='pass']").first
+        campo_pass.fill(PASSWORD)
+        
+        # Submeter Login (Clique no botão de Login corrigido ou Enter no campo pass)
+        print("🚀 A efetuar Login...")
+        try:
+            # Tenta clicar no botão de login com seletores váildos
+            page.locator("button:has-text('LOGIN'), input[value='LOGIN'], input[type='submit']").first.click(timeout=3000)
+        except Exception:
+            # Se não encontrar o botão especificamente, pressiona Enter na password
+            campo_pass.press("Enter")
 
         page.wait_for_timeout(4000)
 
