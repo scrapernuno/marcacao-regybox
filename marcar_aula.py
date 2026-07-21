@@ -761,7 +761,7 @@ def esperar_aulas_da_data(page, data_alvo):
                 });
             }
             """,
-            data_iso,
+            arg=data_iso,
             timeout=20000,
         )
 
