@@ -1,12 +1,50 @@
-      - name: Instalar Dependências
+name: Marcacao RegyBox
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # 17:34 UTC = 18:34 Madeira (verão)
+    - cron: '34 17 * * 1-5'
+
+jobs:
+  marcar:
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 15
+
+    env:
+      TZ: Atlantic/Madeira
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+
+      - name: Checkout do Repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Atualizar pip e instalar dependências
         run: |
           python -m pip install --upgrade pip
-          python -m pip install playwright requests beautifulsoup4 urllib3
+          pip install \
+            playwright \
+            requests \
+            beautifulsoup4 \
+            lxml \
+            urllib3
 
       - name: Instalar Chromium
         run: |
           python -m playwright install chromium
           python -m playwright install-deps chromium
+
+      - name: Criar pasta de diagnóstico
+        run: |
+          mkdir -p diagnostico_regybox
 
       - name: Executar Script de Marcação
         id: marcacao
@@ -16,3 +54,29 @@
           REGYBOX_PASS: ${{ secrets.REGYBOX_PASS }}
         run: |
           python marcar_aula.py
+
+      - name: Guardar Diagnóstico RegyBox
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regybox-diagnostico-${{ github.run_number }}
+          path: |
+            diagnostico_regybox
+            *.png
+            *.html
+            *.json
+            *.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Confirmar Resultado da Marcação
+        if: always()
+        run: |
+          if [ "${{ steps.marcacao.outcome }}" = "success" ]; then
+            echo "✅ A marcação terminou com sucesso."
+            exit 0
+          fi
+
+          echo "::error::A marcação falhou."
+          echo "Consulte o artefacto regybox-diagnostico-${{ github.run_number }}."
+          exit 1
