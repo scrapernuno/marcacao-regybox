@@ -2,9 +2,8 @@ name: Marcacao RegyBox
 
 on:
   schedule:
-    # Corre às 18:34 WEST (17:34 UTC) de Segunda a Sexta
     - cron: '34 17 * * 1-5'
-  workflow_dispatch: # Permite correr manualmente no separador Actions
+  workflow_dispatch:
 
 jobs:
   marcar:
@@ -35,3 +34,10 @@ jobs:
           REGYBOX_PASS: ${{ secrets.REGYBOX_PASS }}
         run: |
           python marcar_aula.py
+
+      - name: Guardar Foto do Ecrã
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regybox-screenshot
+          path: ecra_regybox.png
