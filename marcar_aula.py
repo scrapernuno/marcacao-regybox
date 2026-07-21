@@ -38,7 +38,7 @@ def executar_marcacao():
         page.goto(REGYBOX_URL, wait_until="networkidle")
         page.wait_for_timeout(2000)
 
-        # Passo 1: Selecionar a Box (se o campo de pesquisa estiver visível)
+        # Passo 1: Selecionar a Box
         try:
             campo_pesquisa = page.locator("input[placeholder*='Procura'], input[placeholder*='box'], input[type='text']").first
             if campo_pesquisa.is_visible(timeout=5000):
@@ -60,21 +60,20 @@ def executar_marcacao():
         campo_pass = page.locator("input[type='password'], input[placeholder*='password'], input[name*='pass']").first
         campo_pass.fill(PASSWORD)
         
-        # Submeter Login (Clique no botão de Login corrigido ou Enter no campo pass)
         print("🚀 A efetuar Login...")
         try:
-            # Tenta clicar no botão de login com seletores váildos
             page.locator("button:has-text('LOGIN'), input[value='LOGIN'], input[type='submit']").first.click(timeout=3000)
         except Exception:
-            # Se não encontrar o botão especificamente, pressiona Enter na password
             campo_pass.press("Enter")
 
-        page.wait_for_timeout(4000)
+        # Aguarda que a página pós-login carregue devidamente
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(5000)
 
-        # Passo 3: Navegar para AULAS
+        # Passo 3: Navegar para AULAS/Calendário se disponível
         try:
             botao_aulas = page.locator("a[onclick*='calendario_aulas'], [id*='aulas']").first
-            if botao_aulas.is_visible(timeout=5000):
+            if botao_aulas.is_visible(timeout=3000):
                 print("🗺️ A abrir calendário de aulas...")
                 botao_aulas.click()
                 page.wait_for_timeout(3000)
@@ -84,24 +83,33 @@ def executar_marcacao():
         # Passo 4: Mudar para o dia alvo
         print(f"📅 A selecionar o dia {dia_alvo} ({data_formatada_iso}) no calendário...")
         
-        page.evaluate(f"""
-            if (typeof carrega_aulas === 'function') {{
-                carrega_aulas('{data_formatada_iso}');
-            }} else if (typeof muda_dia === 'function') {{
-                muda_dia('{data_formatada_iso}');
-            }}
-        """)
-        page.wait_for_timeout(2000)
-
+        # Tenta a navegação visual primeiro (clique no elemento da data no carrossel/calendário)
+        mudou_dia_com_sucesso = False
         try:
-            seletor_dia = page.locator(f"[onclick*='{data_formatada_iso}'], [data-date*='{data_formatada_iso}']").first
-            if seletor_dia.is_visible(timeout=2000):
+            seletor_dia = page.locator(f"[onclick*='{data_formatada_iso}'], [data-date*='{data_formatada_iso}'], text='{dia_alvo}'").first
+            if seletor_dia.is_visible(timeout=3000):
                 seletor_dia.click(force=True)
-                print(f"✅ Clique no dia {dia_alvo} executado!")
+                print(f"✅ Clique no dia {dia_alvo} executado via DOM!")
+                mudou_dia_com_sucesso = True
         except Exception:
             pass
 
-        page.wait_for_timeout(3000)
+        # Se o clique visual falhar, executa a função JS tratada com try/catch
+        if not mudou_dia_com_sucesso:
+            print("🔄 A tentar alternar dia via instrução JavaScript...")
+            page.evaluate(f"""
+                try {{
+                    if (typeof carrega_aulas === 'function') {{
+                        carrega_aulas('{data_formatada_iso}');
+                    }} else if (typeof muda_dia === 'function') {{
+                        muda_dia('{data_formatada_iso}');
+                    }}
+                }} catch(e) {{
+                    console.log('Erro ao mudar dia via JS:', e);
+                }}
+            """)
+
+        page.wait_for_timeout(4000)
 
         # Rolamento para carregar os elementos
         for i in range(3):
