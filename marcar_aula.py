@@ -4,14 +4,14 @@ import datetime
 from playwright.sync_api import sync_playwright
 
 REGYBOX_URL = "https://www.regibox.pt/app/app_nova/login.php"
-AULAS_DIRECT_URL = "https://www.regibox.pt/app/app_nova/index.php?option=aulas"
 NOME_BOX = "Naval Box"
 
 USERNAME = os.environ.get("REGYBOX_USER", "")
 PASSWORD = os.environ.get("REGYBOX_PASS", "")
 
-HORARIO_TARGET = "18:35"
-AULAS_PRIORIDADE = ["HYROX", "HIROX", "CROSSFIT", "STRENGHT", "STRENGTH"]
+# HORÁRIOS DA AULA NO PAINEL (18:25)
+HORARIOS_TARGET = ["18:25", "18:25 - 19:25", "18:35"]
+AULAS_PRIORIDADE = ["CROSSFIT", "HYROX", "HIROX", "STRENGHT", "STRENGTH", "OPEN"]
 
 def executar_marcacao():
     agora_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -24,7 +24,7 @@ def executar_marcacao():
     print(f"[{agora_pt.strftime('%H:%M:%S')}] 🚀 A iniciar o robô de marcação...")
     print(f"📅 Data atual PT: {agora_pt.strftime('%d/%m/%Y')}")
     print(f"📅 Data alvo (+3 dias): {data_alvo.strftime('%d/%m/%Y')} (Dia {dia_alvo})")
-    print(f"⏰ Horário pretendido: {HORARIO_TARGET}")
+    print(f"⏰ Horário da aula a procurar: {HORARIOS_TARGET[0]}")
 
     if not USERNAME or not PASSWORD:
         print("❌ ERRO CRÍTICO: As credenciais REGYBOX_USER ou REGYBOX_PASS não estão configuradas nas Secrets!")
@@ -67,49 +67,27 @@ def executar_marcacao():
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(3000)
 
-        # 3. PASSO 1: Abrir diretamente a vista de Aulas / Calendário
+        # 3. PASSO 1: Abrir Aulas
         print("MAPA PASSO 1: A acionar navegação para AULAS...")
-        
-        # Tenta primeiro acionar as funções JavaScript nativas da app
-        navegou = False
-        try:
-            page.evaluate("""
-                if (typeof load_script === 'function') {
-                    load_script('../app_nova/php/aulas/marca_aulas.php');
-                } else if (typeof calendario_aulas === 'function') {
-                    calendario_aulas();
-                }
-            """)
-            page.wait_for_timeout(2000)
-            navegou = True
-        except Exception:
-            pass
-
-        # Se falhar, clica com força em qualquer elemento contendo AULAS ou Ícone de Calendário
-        if not navegou or page.locator("text='AULAS'").count() > 0:
-            try:
-                elem = page.locator("div:has-text('AULAS'), .card2, [onclick*='aulas']").first
-                elem.click(force=True, timeout=3000)
-            except Exception:
-                pass
-
+        page.evaluate("""
+            try {
+                if (typeof load_script === 'function') load_script('../app_nova/php/aulas/marca_aulas.php');
+                if (typeof calendario_aulas === 'function') calendario_aulas();
+            } catch(e) {}
+        """)
         page.wait_for_timeout(3000)
 
-        # 4. PASSO 2: Selecionar o dia alvo no calendário
+        # 4. PASSO 2: Selecionar o Dia no Calendário
         print(f"📅 PASSO 2: A selecionar o dia {dia_alvo} ({data_formatada_iso})...")
-        
-        # Executa diretamente o carregamento do dia no JS do RegyBox
         page.evaluate(f"""
             try {{
                 if (typeof carrega_aulas === 'function') carrega_aulas('{data_formatada_iso}');
                 if (typeof muda_dia === 'function') muda_dia('{data_formatada_iso}');
-                if (typeof load_script === 'function') load_script('../app_nova/php/aulas/marca_aulas.php?data={data_formatada_iso}');
             }} catch(e) {{}}
         """)
-        
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(2500)
 
-        # Clique de segurança no número do dia se estiver visível no ecrã
+        # Clique visual no dia no calendário
         try:
             dia_elem = page.locator(f"//span[text()='{dia_alvo}'] | //td[not(contains(@class,'disabled'))]//span[text()='{dia_alvo}']").first
             if dia_elem.is_visible(timeout=2000):
@@ -119,44 +97,41 @@ def executar_marcacao():
             pass
 
         page.wait_for_timeout(2000)
-
-        # Tira screenshot do estado atual do ecrã para verificação
         page.screenshot(path="ecra_regybox.png", full_page=True)
 
-        # 5. PASSO 3: Localizar a aula e Clicar em INSCREVER
-        print(f"🔎 PASSO 3: A procurar a aula das {HORARIO_TARGET} no painel...")
+        # 5. PASSO 3: Procurar a aula (18:25) e Clicar em INSCREVER
+        print("🔎 PASSO 3: A procurar a aula das 18:25 no painel...")
         aula_marcada = False
 
-        # Busca prioritária por modalidade
-        for modalidade in AULAS_PRIORIDADE:
+        for hora in HORARIOS_TARGET:
             if aula_marcada:
                 break
+            for modalidade in AULAS_PRIORIDADE:
+                bloco_aula = page.locator("div, tr, li").filter(has_text=hora).filter(has_text=modalidade)
 
-            bloco_aula = page.locator("div, tr, li").filter(has_text=HORARIO_TARGET).filter(has_text=modalidade)
+                if bloco_aula.count() > 0:
+                    card = bloco_aula.first
+                    card.scroll_into_view_if_needed()
+                    
+                    texto = card.inner_text().upper()
+                    if "CANCELAR" in texto or "INSCRITO" in texto:
+                        print(f"🎉 JÁ ESTÁS INSCRITO em {modalidade} ({hora})!")
+                        aula_marcada = True
+                        break
 
-            if bloco_aula.count() > 0:
-                card = bloco_aula.first
-                card.scroll_into_view_if_needed()
-                
-                texto = card.inner_text().upper()
-                if "CANCELAR" in texto or "INSCRITO" in texto:
-                    print(f"🎉 JÁ ESTÁS INSCRITO em {modalidade} às {HORARIO_TARGET}!")
-                    aula_marcada = True
-                    break
+                    btn = card.locator("button, a, div, span").filter(has_text="INSCREVER").first
+                    if btn.is_visible():
+                        print(f"🎯 Botão INSCREVER encontrado para {modalidade} às {hora}! A clicar...")
+                        btn.click(force=True)
+                        page.wait_for_timeout(3000)
+                        print(f"🎉 SUCESSO: Inscrição efetuada em {modalidade} às {hora}!")
+                        aula_marcada = True
+                        break
 
-                btn = card.locator("button, a, div, span").filter(has_text="INSCREVER").first
-                if btn.is_visible():
-                    print(f"🎯 Botão INSCREVER encontrado para {modalidade}! A clicar...")
-                    btn.click(force=True)
-                    page.wait_for_timeout(3000)
-                    print(f"🎉 SUCESSO: Inscrição efetuada em {modalidade} às {HORARIO_TARGET}!")
-                    aula_marcada = True
-                    break
-
-        # Busca genérica de recurso
+        # Backup: Qualquer botão INSCREVER que esteja na linha/bloco das 18:25
         if not aula_marcada:
-            print(f"🔄 A procurar qualquer botão INSCREVER para as {HORARIO_TARGET}...")
-            btn_generico = page.locator(f"xpath=//*[contains(text(), '{HORARIO_TARGET}')]/ancestor::*[position()<=4]//button[contains(., 'INSCREVER')] | //*[contains(text(), '{HORARIO_TARGET}')]/ancestor::*[position()<=4]//*[contains(text(), 'INSCREVER')]").first
+            print("🔄 A procurar qualquer botão INSCREVER perto das 18:25...")
+            btn_generico = page.locator("xpath=//*[contains(text(), '18:25')]/ancestor::*[position()<=4]//button[contains(., 'INSCREVER')] | //*[contains(text(), '18:25')]/ancestor::*[position()<=4]//*[contains(text(), 'INSCREVER')]").first
 
             if btn_generico.is_visible():
                 btn_generico.scroll_into_view_if_needed()
@@ -167,7 +142,7 @@ def executar_marcacao():
                 aula_marcada = True
 
         if not aula_marcada:
-            print(f"❌ Não foi possível encontrar ou clicar no botão INSCREVER para as {HORARIO_TARGET} no dia {dia_alvo}.")
+            print(f"❌ Não foi possível encontrar ou clicar no botão INSCREVER para as 18:25 no dia {dia_alvo}.")
 
         browser.close()
 
