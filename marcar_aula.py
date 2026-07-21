@@ -3,7 +3,6 @@ import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 from playwright.sync_api import (
@@ -11,10 +10,6 @@ from playwright.sync_api import (
     sync_playwright,
 )
 
-
-# ============================================================
-# CONFIGURAÇÃO
-# ============================================================
 
 REGYBOX_URL = "https://www.regibox.pt/app/app_nova/login.php"
 NOME_BOX = "Naval Box"
@@ -24,45 +19,27 @@ PASSWORD = os.environ.get("REGYBOX_PASS", "").strip()
 
 TIMEZONE = ZoneInfo("Atlantic/Madeira")
 
-DIAS_ANTECEDENCIA = 3
+# A Regibox abre as inscrições com quatro dias de antecedência.
+DIAS_ANTECEDENCIA = 4
 HORA_ALVO = "18:25"
 
-MODALIDADES_ACEITES = [
-    "STRENGHT",
-    "STRENGTH",
+# Ordem obrigatória de preferência.
+MODALIDADES_PRIORIDADE = [
     "HYROX",
     "HIROX",
     "CROSSFIT",
-    "OPEN",
+    "STRENGHT",
+    "STRENGTH",
 ]
-
-MESES_PT = {
-    1: "JANEIRO",
-    2: "FEVEREIRO",
-    3: "MARÇO",
-    4: "ABRIL",
-    5: "MAIO",
-    6: "JUNHO",
-    7: "JULHO",
-    8: "AGOSTO",
-    9: "SETEMBRO",
-    10: "OUTUBRO",
-    11: "NOVEMBRO",
-    12: "DEZEMBRO",
-}
 
 PASTA_DIAGNOSTICO = Path("diagnostico_regybox")
 
-
-# ============================================================
-# FUNÇÕES GERAIS
-# ============================================================
 
 def esperar(page, milissegundos=1500):
     page.wait_for_timeout(milissegundos)
 
 
-def normalizar_texto(texto):
+def normalizar(texto):
     return " ".join(
         (texto or "")
         .replace("\xa0", " ")
@@ -117,49 +94,6 @@ def guardar_diagnostico(page, nome):
             f"o texto {nome}: {exc}"
         )
 
-    try:
-        frames = []
-
-        for indice, frame in enumerate(page.frames):
-            frames.append(
-                f"FRAME={indice}\n"
-                f"NOME={frame.name}\n"
-                f"URL={frame.url}\n"
-                f"{'-' * 80}\n"
-            )
-
-        (
-            PASTA_DIAGNOSTICO
-            / f"{nome}_frames.txt"
-        ).write_text(
-            "\n".join(frames),
-            encoding="utf-8",
-        )
-    except Exception as exc:
-        print(
-            f"⚠️ Não foi possível guardar "
-            f"os frames {nome}: {exc}"
-        )
-
-
-def preencher_primeiro_visivel(locator, valor):
-    try:
-        total = locator.count()
-    except Exception:
-        return False
-
-    for indice in range(min(total, 30)):
-        elemento = locator.nth(indice)
-
-        try:
-            if elemento.is_visible():
-                elemento.fill(valor)
-                return True
-        except Exception:
-            continue
-
-    return False
-
 
 def clicar_primeiro_visivel(locator, timeout=5000):
     try:
@@ -190,31 +124,24 @@ def clicar_primeiro_visivel(locator, timeout=5000):
     return False
 
 
-def limpar_marcadores(page):
-    page.evaluate(
-        """
-        () => {
-            const atributos = [
-                "data-rbx-dia-alvo",
-                "data-rbx-cartao-alvo",
-                "data-rbx-inscrever-alvo"
-            ];
+def preencher_primeiro_visivel(locator, valor):
+    try:
+        total = locator.count()
+    except Exception:
+        return False
 
-            for (const atributo of atributos) {
-                document
-                    .querySelectorAll(`[${atributo}]`)
-                    .forEach(elemento => {
-                        elemento.removeAttribute(atributo);
-                    });
-            }
-        }
-        """
-    )
+    for indice in range(min(total, 30)):
+        elemento = locator.nth(indice)
 
+        try:
+            if elemento.is_visible():
+                elemento.fill(valor)
+                return True
+        except Exception:
+            continue
 
-# ============================================================
-# LOGIN
-# ============================================================
+    return False
+
 
 def selecionar_box(page):
     print(
@@ -225,7 +152,6 @@ def selecionar_box(page):
     campos = page.locator(
         "input[placeholder*='Procura' i], "
         "input[placeholder*='box' i], "
-        "input[placeholder*='ginásio' i], "
         "input[type='text']"
     )
 
@@ -244,65 +170,52 @@ def selecionar_box(page):
             campo.fill(NOME_BOX)
             esperar(page, 1000)
 
-            opcoes = [
-                page.get_by_text(
-                    NOME_BOX,
-                    exact=True,
-                ),
-                page.get_by_text(
-                    NOME_BOX,
-                    exact=False,
-                ),
-            ]
+            opcao = page.get_by_text(
+                NOME_BOX,
+                exact=False,
+            )
 
-            for opcao in opcoes:
-                if clicar_primeiro_visivel(
-                    opcao,
-                    timeout=3000,
-                ):
-                    print("✅ Box selecionada.")
-                    esperar(page, 1000)
-                    return True
+            if clicar_primeiro_visivel(
+                opcao,
+                timeout=3000,
+            ):
+                print("✅ Box selecionada.")
+                esperar(page, 1000)
+                return
 
         except Exception:
             continue
 
     print(
-        "ℹ️ A Box pode já estar selecionada "
-        "ou o campo não está disponível."
+        "ℹ️ A Box pode já estar selecionada."
     )
-
-    return False
 
 
 def efetuar_login(page):
     print("🔑 A preencher dados de acesso...")
 
-    campo_utilizador = page.locator(
+    utilizador = page.locator(
         "input[type='email'], "
         "input[name*='user' i], "
         "input[name*='email' i], "
-        "input[placeholder*='mail' i], "
-        "input[placeholder*='utilizador' i]"
+        "input[placeholder*='mail' i]"
     )
 
-    campo_password = page.locator(
+    password = page.locator(
         "input[type='password'], "
-        "input[name*='pass' i], "
-        "input[placeholder*='password' i], "
-        "input[placeholder*='senha' i]"
+        "input[name*='pass' i]"
     )
 
     if not preencher_primeiro_visivel(
-        campo_utilizador,
+        utilizador,
         USERNAME,
     ):
         raise RuntimeError(
-            "Campo de utilizador/e-mail não encontrado."
+            "Campo de utilizador não encontrado."
         )
 
     if not preencher_primeiro_visivel(
-        campo_password,
+        password,
         PASSWORD,
     ):
         raise RuntimeError(
@@ -311,16 +224,15 @@ def efetuar_login(page):
 
     print("🚀 A efetuar Login...")
 
-    botoes_login = page.locator(
+    botao_login = page.locator(
         "button:has-text('LOGIN'), "
         "button:has-text('ENTRAR'), "
         "input[type='submit'], "
-        "input[value*='LOGIN' i], "
-        "input[value*='ENTRAR' i]"
+        "input[value*='LOGIN' i]"
     )
 
     if not clicar_primeiro_visivel(
-        botoes_login,
+        botao_login,
         timeout=5000,
     ):
         page.keyboard.press("Enter")
@@ -338,14 +250,8 @@ def efetuar_login(page):
     print(f"🌐 URL após login: {page.url}")
 
     if "login.php" in page.url.lower():
-        guardar_diagnostico(
-            page,
-            "erro_login",
-        )
-
         raise RuntimeError(
-            "O login não foi concluído. "
-            "A página continua no login."
+            "O login não foi concluído."
         )
 
     guardar_diagnostico(
@@ -353,10 +259,6 @@ def efetuar_login(page):
         "02_apos_login",
     )
 
-
-# ============================================================
-# ABRIR ÁREA DE AULAS
-# ============================================================
 
 def abrir_aulas(page):
     print("📚 PASSO 1: A clicar em AULAS...")
@@ -382,174 +284,83 @@ def abrir_aulas(page):
         ),
         page.locator(
             "a:has-text('AULAS'), "
-            "button:has-text('AULAS'), "
-            "[onclick*='aula' i]"
+            "button:has-text('AULAS')"
         ),
     ]
 
-    clicou = False
-
     for candidato in candidatos:
-        try:
-            if clicar_primeiro_visivel(
-                candidato,
-                timeout=3000,
-            ):
-                clicou = True
-                break
-        except Exception:
-            continue
+        if clicar_primeiro_visivel(
+            candidato,
+            timeout=3000,
+        ):
+            esperar(page, 3500)
 
-    if not clicou:
-        guardar_diagnostico(
-            page,
-            "erro_botao_aulas",
-        )
-
-        raise RuntimeError(
-            "Não foi possível encontrar "
-            "ou clicar em AULAS."
-        )
-
-    esperar(page, 3500)
-
-    try:
-        page.get_by_text(
-            re.compile(
-                r"AULAS DE .*20\d{2}",
-                re.IGNORECASE,
+            print(
+                "✅ Calendário de aulas aberto."
             )
-        ).first.wait_for(
-            state="visible",
-            timeout=10000,
-        )
 
-    except PlaywrightTimeoutError:
-        guardar_diagnostico(
-            page,
-            "erro_calendario",
-        )
+            guardar_diagnostico(
+                page,
+                "03_calendario_aberto",
+            )
 
-        raise RuntimeError(
-            "A área AULAS foi clicada, "
-            "mas o calendário não apareceu."
-        )
+            return
 
-    print("✅ Calendário de aulas aberto.")
-
-    guardar_diagnostico(
-        page,
-        "03_calendario_aberto",
+    raise RuntimeError(
+        "Não foi possível clicar em AULAS."
     )
 
 
-# ============================================================
-# SELECIONAR DIA
-# ============================================================
-
-def selecionar_dia_calendario(page, data_alvo):
-    dia_alvo = data_alvo.day
+def selecionar_dia(page, data_alvo):
     data_iso = data_alvo.strftime("%Y-%m-%d")
+    dia = data_alvo.day
 
     print(
-        f"📅 PASSO 2: A selecionar o dia "
-        f"{dia_alvo} no calendário..."
+        f"📅 PASSO 2: A selecionar "
+        f"{data_iso} no calendário..."
     )
 
-    limpar_marcadores(page)
-
-    seletor_dia = (
+    seletor = (
         f"[onclick=\"wods_dia('{data_iso}')\"], "
         f"[onclick*=\"wods_dia('{data_iso}')\"]"
     )
 
-    elementos = page.locator(seletor_dia)
+    elemento = page.locator(seletor).first
 
     try:
-        total = elementos.count()
-    except Exception:
-        total = 0
-
-    print(
-        f"🔎 Elementos do calendário associados "
-        f"a {data_iso}: {total}"
-    )
-
-    if total == 0:
-        guardar_diagnostico(
-            page,
-            "erro_dia_nao_encontrado",
-        )
-
-        raise RuntimeError(
-            f"Não foi encontrado um elemento "
-            f"wods_dia para {data_iso}."
-        )
-
-    elemento_dia = elementos.first
-
-    try:
-        elemento_dia.wait_for(
+        elemento.wait_for(
             state="visible",
-            timeout=7000,
-        )
-
-        onclick = (
-            elemento_dia.get_attribute("onclick")
-            or ""
-        )
-
-        texto = normalizar_texto(
-            elemento_dia.inner_text()
-        )
-
-        tag = elemento_dia.evaluate(
-            "elemento => elemento.tagName"
+            timeout=10000,
         )
 
         print(
-            f"🔧 Elemento do dia encontrado: "
-            f"tag={tag} | "
-            f"texto={texto} | "
-            f"onclick={onclick}"
+            f"🔧 Elemento encontrado: "
+            f"{elemento.get_attribute('onclick')}"
         )
 
-        elemento_dia.evaluate(
-            """
-            elemento => {
-                elemento.setAttribute(
-                    "data-rbx-dia-alvo",
-                    "true"
-                );
-            }
-            """
-        )
+        elemento.scroll_into_view_if_needed()
 
-        elemento_dia.scroll_into_view_if_needed()
-        esperar(page, 500)
-
-        elemento_dia.click(
+        elemento.click(
             timeout=7000,
             force=True,
         )
 
         print(
-            f"✅ Clique real no calendário "
-            f"para {data_iso} realizado."
+            f"✅ Dia {dia} selecionado."
         )
 
     except Exception as exc:
         guardar_diagnostico(
             page,
-            "erro_clique_dia",
+            "erro_selecao_dia",
         )
 
         raise RuntimeError(
-            f"Não foi possível clicar no dia "
-            f"{dia_alvo}: {exc}"
+            f"Não foi possível selecionar "
+            f"o dia {dia}: {exc}"
         ) from exc
 
-    esperar_aulas_da_data(
+    esperar_lista_aulas(
         page,
         data_alvo,
     )
@@ -559,225 +370,133 @@ def selecionar_dia_calendario(page, data_alvo):
         "04_dia_carregado",
     )
 
-    confirmar_data_carregada(
-        page,
-        data_alvo,
-    )
 
-
-def esperar_aulas_da_data(page, data_alvo):
+def esperar_lista_aulas(page, data_alvo):
     data_iso = data_alvo.strftime("%Y-%m-%d")
-    dia = data_alvo.day
-    mes = MESES_PT[data_alvo.month]
-    ano = data_alvo.year
-
-    cabecalho_esperado = (
-        f"{dia} DE {mes} DE {ano}"
-    )
 
     print(
-        f"⏳ A aguardar o carregamento "
-        f"das aulas de {data_iso}..."
+        f"⏳ A aguardar as aulas "
+        f"de {data_iso}..."
     )
 
     for tentativa in range(1, 21):
         esperar(page, 1000)
 
-        try:
-            texto_pagina = normalizar_texto(
-                page.locator("body").inner_text(
-                    timeout=5000
+        resultado = page.evaluate(
+            """
+            hora => {
+                const painel =
+                    document.querySelector(
+                        "#calendar-events"
+                    );
+
+                if (!painel) {
+                    return {
+                        painel: false,
+                        hora: false,
+                        cartoes: 0
+                    };
+                }
+
+                const texto = (
+                    painel.innerText || ""
                 )
-            )
-        except Exception as exc:
-            print(
-                f"⚠️ Verificação {tentativa}/20: "
-                f"não foi possível ler a página: {exc}"
-            )
-            continue
+                .replace(/\\s+/g, " ")
+                .toUpperCase();
 
-        tem_cabecalho = (
-            cabecalho_esperado in texto_pagina
+                const cartoes =
+                    painel.querySelectorAll(
+                        ".card2, "
+                        + ".round_rect_all_5, "
+                        + "[class*='card']"
+                    ).length;
+
+                return {
+                    painel: true,
+                    hora:
+                        texto.includes(hora),
+                    cartoes: cartoes,
+                    texto:
+                        texto.substring(0, 500)
+                };
+            }
+            """,
+            HORA_ALVO,
         )
-
-        tem_hora = (
-            HORA_ALVO in texto_pagina
-        )
-
-        tem_modalidade = any(
-            modalidade in texto_pagina
-            for modalidade in MODALIDADES_ACEITES
-        )
-
-        try:
-            total_inscrever = page.get_by_text(
-                "INSCREVER",
-                exact=True,
-            ).count()
-        except Exception:
-            total_inscrever = 0
 
         print(
             f"🔄 Verificação {tentativa}/20: "
-            f"cabeçalho={tem_cabecalho} | "
-            f"hora={tem_hora} | "
-            f"modalidade={tem_modalidade} | "
-            f"inscrever={total_inscrever}"
+            f"painel={resultado.get('painel')} | "
+            f"hora={resultado.get('hora')} | "
+            f"cartões={resultado.get('cartoes')}"
         )
 
         if (
-            tem_cabecalho
-            and tem_hora
-            and tem_modalidade
+            resultado.get("painel")
+            and resultado.get("hora")
         ):
             print(
-                f"✅ Painel do dia {data_iso} "
-                "carregado corretamente."
+                f"✅ A lista contém uma aula "
+                f"às {HORA_ALVO}."
             )
 
-            esperar(page, 1000)
-            return True
+            return
 
         if tentativa in (5, 10, 15):
             print(
-                "⚠️ O painel ainda não foi "
-                "confirmado. A repetir o clique "
-                "no dia selecionado..."
+                "⚠️ A repetir o clique no dia..."
             )
 
             try:
-                page.locator(
-                    "[data-rbx-dia-alvo='true']"
-                ).first.click(
-                    timeout=4000,
-                    force=True,
+                data_iso = data_alvo.strftime(
+                    "%Y-%m-%d"
                 )
+
+                page.locator(
+                    f"[onclick*=\"wods_dia('{data_iso}')\"]"
+                ).first.click(
+                    force=True,
+                    timeout=4000,
+                )
+
             except Exception as exc:
                 print(
-                    f"⚠️ Não foi possível repetir "
-                    f"o clique: {exc}"
+                    f"⚠️ Falha ao repetir clique: "
+                    f"{exc}"
                 )
 
     guardar_diagnostico(
         page,
-        "timeout_carregamento_aulas",
-    )
-
-    try:
-        texto_final = page.locator(
-            "body"
-        ).inner_text()
-
-        linhas_horarios = [
-            " ".join(linha.split())
-            for linha in texto_final.splitlines()
-            if re.search(
-                r"\b\d{1,2}:\d{2}\b",
-                linha,
-            )
-        ]
-
-        print(
-            "🕒 Horários encontrados no painel:"
-        )
-
-        for linha in linhas_horarios[:100]:
-            print(f"   {linha}")
-
-    except Exception as exc:
-        print(
-            f"⚠️ Não foi possível obter "
-            f"o diagnóstico final: {exc}"
-        )
-
-    raise RuntimeError(
-        f"A página não confirmou o painel "
-        f"de {data_iso} após 20 segundos."
-    )
-
-
-def confirmar_data_carregada(page, data_alvo):
-    dia = data_alvo.day
-    mes = MESES_PT[data_alvo.month]
-    ano = data_alvo.year
-    data_iso = data_alvo.strftime("%Y-%m-%d")
-
-    texto_pagina = normalizar_texto(
-        page.locator("body").inner_text()
-    )
-
-    cabecalho_esperado = (
-        f"{dia} DE {mes} DE {ano}"
-    )
-
-    tem_cabecalho = (
-        cabecalho_esperado in texto_pagina
-    )
-
-    tem_hora = (
-        HORA_ALVO in texto_pagina
-    )
-
-    tem_modalidade = any(
-        modalidade in texto_pagina
-        for modalidade in MODALIDADES_ACEITES
-    )
-
-    print(
-        f"🔎 Confirmação da data: "
-        f"cabeçalho={tem_cabecalho} | "
-        f"hora={tem_hora} | "
-        f"modalidade={tem_modalidade}"
-    )
-
-    if (
-        tem_cabecalho
-        and tem_hora
-        and tem_modalidade
-    ):
-        print(
-            f"✅ As aulas de {data_iso} "
-            "estão carregadas."
-        )
-
-        return True
-
-    guardar_diagnostico(
-        page,
-        "erro_data_nao_confirmada",
+        "timeout_lista_aulas",
     )
 
     raise RuntimeError(
-        f"O conteúdo visível não corresponde "
-        f"às aulas de {data_iso}."
+        f"Não apareceu uma aula às "
+        f"{HORA_ALVO} no painel."
     )
 
 
-# ============================================================
-# LOCALIZAR A AULA
-# ============================================================
-
-def localizar_aula(page, data_alvo):
-    data_iso = data_alvo.strftime("%Y-%m-%d")
-
+def localizar_aula_prioritaria(page):
     print(
-        f"🔎 PASSO 3: A procurar "
-        f"a aula das {HORA_ALVO} "
-        f"em {data_iso}..."
+        f"🔎 PASSO 3: A procurar aula "
+        f"às {HORA_ALVO}..."
     )
-
-    limpar_marcadores(page)
 
     resultado = page.evaluate(
         """
         parametros => {
-            const hora = parametros.hora.toUpperCase();
-            const dataIso = parametros.dataIso;
-
-            const modalidades =
-                parametros.modalidades.map(
-                    valor => valor.toUpperCase()
+            const painel =
+                document.querySelector(
+                    "#calendar-events"
                 );
+
+            if (!painel) {
+                return {
+                    sucesso: false,
+                    erro:
+                        "#calendar-events não encontrado"
+                };
+            }
 
             function normalizar(texto) {
                 return (texto || "")
@@ -799,125 +518,186 @@ def localizar_aula(page, data_alvo):
                     elemento.getBoundingClientRect();
 
                 return (
-                    estilo.display !== "none" &&
-                    estilo.visibility !== "hidden" &&
-                    estilo.opacity !== "0" &&
-                    rect.width > 0 &&
-                    rect.height > 0
+                    estilo.display !== "none"
+                    && estilo.visibility !== "hidden"
+                    && rect.width > 0
+                    && rect.height > 0
                 );
             }
 
-            const botoes = Array.from(
-                document.querySelectorAll(
-                    "button, a, [role='button'], [onclick]"
-                )
-            ).filter(elemento => {
-                const texto = normalizar(
-                    elemento.innerText
-                    || elemento.value
-                    || elemento.textContent
-                );
+            const elementosHora =
+                Array.from(
+                    painel.querySelectorAll("*")
+                ).filter(elemento => {
+                    const texto =
+                        normalizar(
+                            elemento.textContent
+                        );
 
-                return (
-                    visivel(elemento)
-                    && texto === "INSCREVER"
-                );
-            });
+                    return (
+                        visivel(elemento)
+                        && texto.includes(
+                            parametros.hora
+                        )
+                    );
+                });
 
-            const diagnostico = [];
+            const candidatos = [];
 
-            for (const botao of botoes) {
-                const onclick =
-                    botao.getAttribute("onclick") || "";
-
-                let atual = botao;
+            for (
+                const elementoHora
+                of elementosHora
+            ) {
+                let atual = elementoHora;
 
                 for (
                     let nivel = 0;
-                    nivel <= 12 && atual;
+                    nivel <= 10 && atual;
                     nivel++
                 ) {
-                    const textoCartao =
-                        normalizar(atual.textContent);
-
-                    const temHora =
-                        textoCartao.includes(hora);
-
-                    const modalidade =
-                        modalidades.find(
-                            nome =>
-                                textoCartao.includes(nome)
+                    const texto =
+                        normalizar(
+                            atual.textContent
                         );
-
-                    const dataCorreta =
-                        !onclick.includes("data=")
-                        || onclick.includes(
-                            `data=${dataIso}`
-                        );
-
-                    diagnostico.push({
-                        nivel: nivel,
-                        hora: temHora,
-                        modalidade:
-                            modalidade || null,
-                        dataCorreta: dataCorreta,
-                        texto:
-                            textoCartao.substring(0, 400),
-                        onclick:
-                            onclick.substring(0, 500)
-                    });
 
                     if (
-                        temHora
-                        && modalidade
-                        && dataCorreta
+                        texto.length > 0
+                        && texto.length < 1500
                     ) {
-                        atual.setAttribute(
-                            "data-rbx-cartao-alvo",
-                            "true"
-                        );
+                        const modalidade =
+                            parametros.prioridades.find(
+                                nome =>
+                                    texto.includes(nome)
+                            );
 
-                        botao.setAttribute(
-                            "data-rbx-inscrever-alvo",
-                            "true"
-                        );
+                        const botao =
+                            Array.from(
+                                atual.querySelectorAll(
+                                    "button, "
+                                    + "a, "
+                                    + "[role='button'], "
+                                    + "[onclick]"
+                                )
+                            ).find(elemento => {
+                                const textoBotao =
+                                    normalizar(
+                                        elemento.innerText
+                                        || elemento.value
+                                        || elemento.textContent
+                                    );
 
-                        atual.scrollIntoView({
-                            behavior: "instant",
-                            block: "center",
-                            inline: "nearest"
-                        });
+                                return (
+                                    visivel(elemento)
+                                    && textoBotao
+                                        === "INSCREVER"
+                                );
+                            });
 
-                        return {
-                            sucesso: true,
-                            modalidade: modalidade,
-                            texto:
-                                textoCartao.substring(0, 700),
-                            onclick: onclick,
-                            classe:
-                                botao.className || "",
-                            tag: botao.tagName,
-                            totalBotoes:
-                                botoes.length
-                        };
+                        if (
+                            modalidade
+                            && botao
+                            && texto.includes(
+                                parametros.hora
+                            )
+                        ) {
+                            candidatos.push({
+                                elemento: atual,
+                                botao: botao,
+                                modalidade:
+                                    modalidade,
+                                texto: texto
+                            });
+
+                            break;
+                        }
                     }
 
                     atual = atual.parentElement;
+
+                    if (
+                        atual
+                        && atual === painel.parentElement
+                    ) {
+                        break;
+                    }
                 }
             }
 
+            if (candidatos.length === 0) {
+                return {
+                    sucesso: false,
+                    erro:
+                        "Nenhum cartão compatível",
+                    elementosHora:
+                        elementosHora.length
+                };
+            }
+
+            candidatos.sort((a, b) => {
+                return (
+                    parametros.prioridades.indexOf(
+                        a.modalidade
+                    )
+                    -
+                    parametros.prioridades.indexOf(
+                        b.modalidade
+                    )
+                );
+            });
+
+            const escolhido =
+                candidatos[0];
+
+            escolhido.elemento.setAttribute(
+                "data-rbx-cartao-alvo",
+                "true"
+            );
+
+            escolhido.botao.setAttribute(
+                "data-rbx-inscrever-alvo",
+                "true"
+            );
+
+            escolhido.elemento.scrollIntoView({
+                behavior: "instant",
+                block: "center",
+                inline: "nearest"
+            });
+
             return {
-                sucesso: false,
-                totalBotoes: botoes.length,
-                diagnostico:
-                    diagnostico.slice(0, 100)
+                sucesso: true,
+                modalidade:
+                    escolhido.modalidade,
+                texto:
+                    escolhido.texto.substring(
+                        0,
+                        600
+                    ),
+                tagBotao:
+                    escolhido.botao.tagName,
+                classeBotao:
+                    escolhido.botao.className || "",
+                onclick:
+                    escolhido.botao.getAttribute(
+                        "onclick"
+                    ) || null,
+                candidatos:
+                    candidatos.map(item => ({
+                        modalidade:
+                            item.modalidade,
+                        texto:
+                            item.texto.substring(
+                                0,
+                                200
+                            )
+                    }))
             };
         }
         """,
         {
             "hora": HORA_ALVO,
-            "dataIso": data_iso,
-            "modalidades": MODALIDADES_ACEITES,
+            "prioridades":
+                MODALIDADES_PRIORIDADE,
         },
     )
 
@@ -932,81 +712,23 @@ def localizar_aula(page, data_alvo):
             "erro_aula_nao_encontrada",
         )
 
-        print(
-            f"🔢 Botões INSCREVER encontrados: "
-            f"{resultado.get('totalBotoes', 0)}"
-        )
-
-        for item in resultado.get(
-            "diagnostico",
-            [],
-        )[:50]:
-            print(
-                "   "
-                f"Nível={item.get('nivel')} | "
-                f"Hora={item.get('hora')} | "
-                f"Modalidade="
-                f"{item.get('modalidade')} | "
-                f"Data={item.get('dataCorreta')} | "
-                f"Texto={item.get('texto')}"
-            )
-
         raise RuntimeError(
-            f"Não foi encontrada uma aula para "
-            f"{data_iso}, às {HORA_ALVO}, "
-            "com uma modalidade aceite."
+            f"Não foi encontrada uma aula "
+            f"prioritária às {HORA_ALVO}."
         )
 
-    onclick = resultado.get("onclick") or ""
-
-    url_load_script = extrair_url_load_script(
-        onclick
-    )
-
-    dados_url = analisar_url_inscricao(
-        url_load_script
-    )
-
-    if (
-        dados_url.get("data")
-        and dados_url.get("data") != data_iso
-    ):
-        raise RuntimeError(
-            "A data do botão encontrado "
-            "não corresponde à data alvo. "
-            f"Botão={dados_url.get('data')} | "
-            f"Alvo={data_iso}"
-        )
-
-    print(
-        f"✅ Aula encontrada: "
-        f"{resultado.get('modalidade')} "
-        f"às {HORA_ALVO}."
+    modalidade = resultado.get(
+        "modalidade"
     )
 
     print(
-        f"🖱️ Elemento: "
-        f"{resultado.get('tag')}"
+        f"✅ Aula selecionada: "
+        f"{modalidade} às {HORA_ALVO}."
     )
 
     print(
-        f"🎨 Classe: "
-        f"{resultado.get('classe')}"
-    )
-
-    print(
-        f"🆔 ID da aula: "
-        f"{dados_url.get('id_aula')}"
-    )
-
-    print(
-        f"📅 Data da chamada: "
-        f"{dados_url.get('data')}"
-    )
-
-    print(
-        f"🔧 URL load_script: "
-        f"{url_load_script}"
+        f"📋 Cartão: "
+        f"{resultado.get('texto')}"
     )
 
     guardar_diagnostico(
@@ -1014,131 +736,14 @@ def localizar_aula(page, data_alvo):
         "05_aula_encontrada",
     )
 
-    return {
-        "modalidade":
-            resultado.get("modalidade"),
-        "onclick":
-            onclick,
-        "url_load_script":
-            url_load_script,
-        "id_aula":
-            dados_url.get("id_aula"),
-        "data":
-            dados_url.get("data"),
-        "source":
-            dados_url.get("source"),
-        "classe":
-            resultado.get("classe"),
-        "texto_cartao":
-            resultado.get("texto"),
-    }
+    return modalidade
 
 
-def extrair_url_load_script(onclick):
-    padroes = [
-        re.compile(
-            r"""load_script\(\s*['"]([^'"]+)['"]\s*,\s*['"]prov['"]\s*\)""",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            r"""load_script\(\s*['"]([^'"]+)['"]""",
-            re.IGNORECASE,
-        ),
-    ]
-
-    for padrao in padroes:
-        correspondencia = padrao.search(
-            onclick or ""
-        )
-
-        if correspondencia:
-            return correspondencia.group(1)
-
-    raise RuntimeError(
-        "Não foi possível extrair a URL "
-        "da chamada load_script do onclick."
-    )
-
-
-def analisar_url_inscricao(url):
-    if not url:
-        raise RuntimeError(
-            "A URL de inscrição está vazia."
-        )
-
-    url_absoluta = url
-
-    if url.startswith("../"):
-        url_absoluta = (
-            "https://www.regibox.pt/app/"
-            + url.replace("../", "", 1)
-        )
-
-    elif url.startswith("/"):
-        url_absoluta = (
-            "https://www.regibox.pt"
-            + url
-        )
-
-    elif not url.startswith("http"):
-        url_absoluta = (
-            "https://www.regibox.pt/"
-            + url.lstrip("/")
-        )
-
-    parsed = urlparse(url_absoluta)
-    parametros = parse_qs(parsed.query)
-
-    def primeiro(nome):
-        valores = parametros.get(nome, [])
-
-        if valores:
-            return valores[0]
-
-        return None
-
-    return {
-        "id_aula": primeiro("id_aula"),
-        "data": primeiro("data"),
-        "source": primeiro("source"),
-        "ano": primeiro("ano"),
-        "id_rato": primeiro("id_rato"),
-        "plano": primeiro("plano"),
-        "box": primeiro("box"),
-    }
-
-
-# ============================================================
-# EXECUTAR INSCRIÇÃO
-# ============================================================
-
-def executar_inscricao(page, aula, data_alvo):
-    data_iso = data_alvo.strftime("%Y-%m-%d")
-
-    if (
-        aula.get("data")
-        and aula.get("data") != data_iso
-    ):
-        raise RuntimeError(
-            "A data extraída do botão não "
-            "corresponde à data alvo. "
-            f"Botão={aula.get('data')} | "
-            f"Alvo={data_iso}"
-        )
-
-    if not aula.get("id_aula"):
-        raise RuntimeError(
-            "O id_aula não foi encontrado "
-            "na chamada de inscrição."
-        )
-
+def clicar_inscrever(page, modalidade):
     print(
-        "🎯 PASSO 4: A executar a inscrição..."
+        f"🎯 PASSO 4: A inscrever em "
+        f"{modalidade}..."
     )
-
-    print(f"🆔 id_aula={aula['id_aula']}")
-    print(f"📅 data={data_iso}")
-    print(f"🏋️ modalidade={aula['modalidade']}")
 
     botao = page.locator(
         "[data-rbx-inscrever-alvo='true']"
@@ -1151,11 +756,15 @@ def executar_inscricao(page, aula, data_alvo):
         )
 
         botao.scroll_into_view_if_needed()
-        esperar(page, 700)
+        esperar(page, 500)
+
+        texto_botao = normalizar(
+            botao.inner_text()
+        )
 
         print(
-            "🖱️ A clicar no botão real "
-            "INSCREVER..."
+            f"🖱️ Botão encontrado: "
+            f"{texto_botao}"
         )
 
         botao.click(
@@ -1164,100 +773,37 @@ def executar_inscricao(page, aula, data_alvo):
         )
 
         print(
-            "✅ Clique real em INSCREVER executado."
+            "✅ Clique em INSCREVER executado."
         )
 
-    except Exception as erro_clique:
-        print(
-            "⚠️ O clique real falhou. "
-            "A tentar a chamada load_script..."
+    except Exception as exc:
+        guardar_diagnostico(
+            page,
+            "erro_clique_inscrever",
         )
 
-        print(
-            f"   Detalhe: {erro_clique}"
-        )
+        raise RuntimeError(
+            f"Não foi possível clicar "
+            f"em INSCREVER: {exc}"
+        ) from exc
 
-        resultado = page.evaluate(
-            """
-            parametros => {
-                if (
-                    typeof window.load_script
-                    !== "function"
-                ) {
-                    return {
-                        sucesso: false,
-                        erro:
-                            "window.load_script não existe"
-                    };
-                }
+    esperar(page, 4000)
 
-                try {
-                    window.load_script(
-                        parametros.url,
-                        "prov"
-                    );
-
-                    return {
-                        sucesso: true,
-                        metodo:
-                            "window.load_script"
-                    };
-
-                } catch (erro) {
-                    return {
-                        sucesso: false,
-                        erro: String(erro)
-                    };
-                }
-            }
-            """,
-            {
-                "url":
-                    aula["url_load_script"],
-            },
-        )
-
-        print(
-            f"🔧 Resultado do fallback: "
-            f"{resultado}"
-        )
-
-        if not resultado.get("sucesso"):
-            guardar_diagnostico(
-                page,
-                "erro_execucao_inscricao",
-            )
-
-            raise RuntimeError(
-                "Falhou o clique no botão "
-                "e também a chamada load_script."
-            )
-
-    esperar(page, 4500)
+    confirmar_modal(page)
 
     guardar_diagnostico(
         page,
-        "06_apos_execucao_inscricao",
+        "06_apos_inscricao",
     )
 
 
-# ============================================================
-# CONFIRMAÇÃO
-# ============================================================
-
-def confirmar_modal_se_existir(page):
-    print(
-        "🔍 A verificar se existe "
-        "confirmação adicional..."
-    )
-
+def confirmar_modal(page):
     candidatos = page.locator(
         "button:has-text('CONFIRMAR'), "
         "button:has-text('SIM'), "
         "button:has-text('OK'), "
         "button:has-text('ACEITAR'), "
-        "a:has-text('CONFIRMAR'), "
-        "[onclick]:has-text('CONFIRMAR')"
+        "a:has-text('CONFIRMAR')"
     )
 
     try:
@@ -1272,7 +818,7 @@ def confirmar_modal_se_existir(page):
             if not candidato.is_visible():
                 continue
 
-            texto = normalizar_texto(
+            texto = normalizar(
                 candidato.inner_text()
             )
 
@@ -1282,134 +828,104 @@ def confirmar_modal_se_existir(page):
             )
 
             print(
-                f"✅ Confirmação adicional "
-                f"aceite: {texto}"
+                f"✅ Confirmação aceite: "
+                f"{texto}"
             )
 
             esperar(page, 3000)
-
-            guardar_diagnostico(
-                page,
-                "07_apos_confirmacao",
-            )
-
             return True
 
         except Exception:
             continue
 
-    print(
-        "ℹ️ Não apareceu uma confirmação adicional."
-    )
-
     return False
 
 
-def verificar_resultado(
-    page,
-    data_alvo,
-    aula,
-):
+def verificar_resultado(page, modalidade):
     print(
         "🔎 PASSO 5: A verificar "
-        "o resultado da inscrição..."
+        "o resultado..."
     )
 
-    confirmar_modal_se_existir(page)
-    esperar(page, 2500)
-
     try:
-        texto_pagina = normalizar_texto(
-            page.locator("body").inner_text()
+        painel = page.locator(
+            "#calendar-events"
+        )
+
+        texto = normalizar(
+            painel.inner_text()
         )
     except Exception:
-        texto_pagina = ""
+        texto = normalizar(
+            page.locator("body").inner_text()
+        )
 
-    indicadores_sucesso = [
+    indicadores = [
         "CANCELAR",
         "DESMARCAR",
         "INSCRITO",
         "INSCRITA",
-        "INSCRIÇÃO EFETUADA",
-        "INSCRICAO EFETUADA",
         "EM LISTA DE ESPERA",
         "LISTA DE ESPERA",
+        "INSCRIÇÃO EFETUADA",
+        "INSCRICAO EFETUADA",
     ]
 
     encontrados = [
         indicador
-        for indicador in indicadores_sucesso
-        if indicador in texto_pagina
+        for indicador in indicadores
+        if indicador in texto
     ]
 
     if encontrados:
         print(
-            "🎉 Confirmação encontrada: "
+            "🎉 Inscrição confirmada: "
             f"{', '.join(encontrados)}"
         )
 
         guardar_diagnostico(
             page,
-            "08_sucesso_confirmado",
+            "07_sucesso_confirmado",
         )
 
-        return True
+        return
 
-    botao_alvo = page.locator(
+    botao = page.locator(
         "[data-rbx-inscrever-alvo='true']"
     )
 
     try:
-        total_marcador = botao_alvo.count()
-    except Exception:
-        total_marcador = -1
-
-    try:
-        visivel = (
-            total_marcador > 0
-            and botao_alvo.first.is_visible()
+        ainda_visivel = (
+            botao.count() > 0
+            and botao.first.is_visible()
         )
     except Exception:
-        visivel = False
+        ainda_visivel = False
 
-    print(
-        f"ℹ️ Botão original ainda presente: "
-        f"{total_marcador}"
-    )
-
-    print(
-        f"ℹ️ Botão original ainda visível: "
-        f"{visivel}"
-    )
-
-    if not visivel:
+    if not ainda_visivel:
         print(
             "✅ O botão INSCREVER deixou "
-            "de estar visível após a ação."
+            "de estar visível."
         )
 
         guardar_diagnostico(
             page,
-            "08_acao_enviada",
+            "07_acao_enviada",
         )
 
-        return True
+        return
 
     guardar_diagnostico(
         page,
-        "08_resultado_inconclusivo",
+        "07_resultado_inconclusivo",
     )
 
     raise RuntimeError(
-        "A ação de inscrição foi executada, "
-        "mas a Regibox não confirmou a inscrição "
-        "e o botão INSCREVER continua visível."
+        f"A inscrição em {modalidade} "
+        "não foi confirmada e o botão "
+        "INSCREVER continua visível."
     )
 
-
-# ============================================================
-# EXECUÇÃO PRINCIPAL
-# ============================================================
 
 def executar_marcacao():
     agora = datetime.now(TIMEZONE)
@@ -1438,11 +954,15 @@ def executar_marcacao():
         f"⏰ Horário alvo: {HORA_ALVO}"
     )
 
+    print(
+        "🏆 Prioridade: "
+        "HYROX → CROSSFIT → STRENGHT"
+    )
+
     if not USERNAME or not PASSWORD:
         print(
             "❌ REGYBOX_USER ou REGYBOX_PASS "
-            "não estão configuradas nas "
-            "GitHub Secrets."
+            "não estão configuradas."
         )
 
         return 2
@@ -1495,16 +1015,6 @@ def executar_marcacao():
             ),
         )
 
-        page.on(
-            "requestfailed",
-            lambda pedido: print(
-                f"🌐 PEDIDO FALHOU: "
-                f"{pedido.method} "
-                f"{pedido.url} — "
-                f"{pedido.failure}"
-            ),
-        )
-
         try:
             print(
                 "🔐 A abrir a página de login..."
@@ -1526,32 +1036,25 @@ def executar_marcacao():
             selecionar_box(page)
             efetuar_login(page)
             abrir_aulas(page)
+            selecionar_dia(page, data_alvo)
 
-            selecionar_dia_calendario(
-                page,
-                data_alvo,
+            modalidade = localizar_aula_prioritaria(
+                page
             )
 
-            aula = localizar_aula(
+            clicar_inscrever(
                 page,
-                data_alvo,
-            )
-
-            executar_inscricao(
-                page,
-                aula,
-                data_alvo,
+                modalidade,
             )
 
             verificar_resultado(
                 page,
-                data_alvo,
-                aula,
+                modalidade,
             )
 
             print(
-                "🎉 PROCESSO CONCLUÍDO "
-                f"para "
+                f"🎉 PROCESSO CONCLUÍDO: "
+                f"{modalidade}, "
                 f"{data_alvo.strftime('%d/%m/%Y')} "
                 f"às {HORA_ALVO}."
             )
