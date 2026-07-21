@@ -13,12 +13,12 @@ HORARIO_TARGET = "18:35"
 AULAS_PRIORIDADE = ["HYROX", "HIROX", "CROSSFIT", "STRENGHT", "STRENGTH"]
 
 def executar_marcacao():
-    # Cálculo exato no fuso horário de Portugal (UTC+1 WEST)
     agora_utc = datetime.datetime.now(datetime.timezone.utc)
     agora_pt = agora_utc + datetime.timedelta(hours=1) 
     
     data_alvo = agora_pt + datetime.timedelta(days=3)
     dia_alvo = str(data_alvo.day)
+    data_formatada_iso = data_alvo.strftime("%Y-%m-%d")
 
     print(f"[{agora_pt.strftime('%H:%M:%S')}] 🚀 A iniciar o robô de marcação...")
     print(f"📅 Data atual PT: {agora_pt.strftime('%d/%m/%Y')}")
@@ -54,25 +54,42 @@ def executar_marcacao():
             print(f"Aviso navegação aulas: {e}")
 
         # Clicar no DIA ALVO (+3 dias)
-        print(f"📅 A selecionar o dia {dia_alvo} no calendário...")
+        print(f"📅 A selecionar o dia {dia_alvo} ({data_formatada_iso}) no calendário...")
+        
+        dia_clicado = False
+        
+        # Estratégia 1: Procurar pelo atributo da data exata no elemento do RegyBox
         try:
-            # Procura especificamente pelas células válidas (td/div) que contêm APENAS o número do dia
-            seletor_dia = page.locator(
-                f"//td[not(contains(@class,'disabled')) and not(contains(@class,'off'))]//span[text()='{dia_alvo}'] | "
-                f"//td[not(contains(@class,'disabled')) and not(contains(@class,'off'))][text()='{dia_alvo}'] | "
-                f"//div[contains(@class,'day') and not(contains(@class,'disabled'))]//span[text()='{dia_alvo}']"
-            ).first
+            seletor_data = page.locator(f"[onclick*='{data_formatada_iso}'], [data-date*='{data_formatada_iso}']").first
+            if seletor_data.is_visible(timeout=3000):
+                seletor_data.click(force=True)
+                dia_clicado = True
+                print(f"✅ Clique direto por data ISO ({data_formatada_iso}) executado!")
+        except Exception:
+            pass
 
-            if seletor_dia.is_visible():
-                seletor_dia.click(force=True)
-                print(f"✅ Clique executado no dia {dia_alvo}!")
-                page.wait_for_timeout(3000)
-            else:
-                print(f"⚠️ Dia {dia_alvo} não encontrado via seletor estrito, a tentar clique genérico pelo texto...")
-                page.get_by_text(dia_alvo, exact=True).first.click(force=True)
-                page.wait_for_timeout(3000)
-        except Exception as e:
-            print(f"⚠️ Erro ao clicar no dia: {e}")
+        # Estratégia 2: Procurar pela div/span de dia específica do calendário
+        if not dia_clicado:
+            try:
+                # Procura elemento do dia que tenha o número e seja visível (timeout reduzido para não travar)
+                elementos_dia = page.locator(f"xpath=//div[contains(@class,'day') or contains(@class,'dia') or contains(@id,'day')]//span[text()='{dia_alvo}'] | //td[not(contains(@class,'disabled'))]//span[text()='{dia_alvo}']")
+                if elementos_dia.count() > 0:
+                    elementos_dia.first.click(force=True, timeout=3000)
+                    dia_clicado = True
+                    print(f"✅ Clique por elemento de calendário do dia {dia_alvo} executado!")
+            except Exception:
+                pass
+
+        # Estratégia 3: Fallback via JavaScript direto na página
+        if not dia_clicado:
+            print("🔄 A tentar acionar a mudança de dia via JavaScript no RegyBox...")
+            page.evaluate(f"""
+                let el = Array.from(document.querySelectorAll('*')).find(e => e.textContent.trim() === '{dia_alvo}' && e.children.length === 0);
+                if (el) el.click();
+            """)
+            page.wait_for_timeout(2000)
+
+        page.wait_for_timeout(3000)
 
         # Scroll para carregar a página toda
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
