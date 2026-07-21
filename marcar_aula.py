@@ -66,27 +66,25 @@ def executar_marcacao():
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(4000)
 
-        # 3. PASSO 1: Clicar no div.item-title AULAS
+        # 3. PASSO 1 DA FOTO: Clicar no texto azul "AULAS"
         print("MAPA PASSO 1: A clicar no texto 'AULAS'...")
         try:
-            elem_aulas = page.locator("div.item-title:has-text('AULAS'), div:has-text('AULAS'), text='AULAS'").first
+            elem_aulas = page.get_by_text("AULAS", exact=True).first
             elem_aulas.scroll_into_view_if_needed()
             elem_aulas.click(force=True)
             print("✅ Clicado em AULAS com sucesso!")
             page.wait_for_timeout(3000)
         except Exception as e:
             print(f"Aviso ao clicar em AULAS: {e}")
-            # Tentar por JavaScript se o clique falhar
             page.evaluate("if(typeof calendario_aulas === 'function') calendario_aulas();")
             page.wait_for_timeout(3000)
 
-        # 4. PASSO 2: Selecionar o dia 24 na grelha do calendário
+        # 4. PASSO 2 DA FOTO: Clicar no dia 24 no calendário mensal
         print(f"📅 PASSO 2: A clicar no dia {dia_alvo} no calendário mensal...")
         dia_clicado = False
 
         try:
-            # Procura o dia numérico exato no calendário (conforme Imagem 2)
-            seletor_dia = page.locator(f"xpath=//div[contains(@class,'calendar') or contains(@class,'month') or contains(@class,'day') or contains(@class,'row')]//*[text()='{dia_alvo}'] | //td//*[text()='{dia_alvo}'] | //span[text()='{dia_alvo}']").first
+            seletor_dia = page.get_by_text(dia_alvo, exact=True).first
             if seletor_dia.is_visible(timeout=3000):
                 seletor_dia.scroll_into_view_if_needed()
                 seletor_dia.click(force=True)
@@ -106,10 +104,10 @@ def executar_marcacao():
 
         page.wait_for_timeout(3000)
 
-        # Guardar foto do ecrã após entrar na lista de aulas do dia 24
+        # Captura de imagem do ecrã para verificação de estado
         page.screenshot(path="ecra_regybox.png", full_page=True)
 
-        # 5. PASSO 3: Procurar a aula e clicar no botão verde INSCREVER
+        # 5. PASSO 3 DA FOTO: Fazer scroll e encontrar o botão verde INSCREVER
         print(f"🔎 PASSO 3: A procurar a aula das {HORARIO_TARGET} no painel da direita...")
         
         aula_marcada = False
@@ -144,15 +142,18 @@ def executar_marcacao():
 
         if not aula_marcada:
             print(f"🔄 A procurar qualquer botão INSCREVER correspondente às {HORARIO_TARGET}...")
-            botao_generico = page.locator(f"xpath=//*[contains(text(), '{HORARIO_TARGET}')]/ancestor::*[contains(@class,'card') or contains(@class,'box') or position()<=4]//button[contains(., 'INSCREVER')] | //*[contains(text(), '{HORARIO_TARGET}')]/ancestor::*[contains(@class,'card') or contains(@class,'box') or position()<=4]//*[contains(@class,'btn') or contains(text(), 'INSCREVER')]").first
-
-            if botao_generico.is_visible():
-                botao_generico.scroll_into_view_if_needed()
-                print("🎯 Botão INSCREVER genérico encontrado! A clicar...")
-                botao_generico.click(force=True)
-                page.wait_for_timeout(3000)
-                print("🎉 Inscrição efetuada com sucesso!")
-                aula_marcada = True
+            botoes = page.locator("button, div, a").filter(has_text="INSCREVER")
+            for i in range(botoes.count()):
+                btn = botoes.nth(i)
+                pai = btn.locator("xpath=ancestor::*[contains(., '18:35') or contains(., '18:25')]")
+                if pai.count() > 0:
+                    btn.scroll_into_view_if_needed()
+                    print("🎯 Botão INSCREVER encontrado perto do horário! A clicar...")
+                    btn.click(force=True)
+                    page.wait_for_timeout(3000)
+                    print("🎉 Inscrição efetuada com sucesso!")
+                    aula_marcada = True
+                    break
 
         if not aula_marcada:
             print(f"❌ Não foi possível encontrar ou clicar no botão INSCREVER para as {HORARIO_TARGET} no dia {dia_alvo}.")
