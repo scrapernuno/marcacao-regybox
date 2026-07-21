@@ -10,7 +10,7 @@ NOME_BOX = "Naval Box"
 USERNAME = os.environ.get("REGYBOX_USER", "")
 PASSWORD = os.environ.get("REGYBOX_PASS", "")
 
-HORARIO_TARGET = "18:25"
+HORARIO_TARGET = "18:35"
 AULAS_PRIORIDADE = ["HYROX", "HIROX", "CROSSFIT", "STRENGHT", "STRENGTH"]
 
 def executar_marcacao():
