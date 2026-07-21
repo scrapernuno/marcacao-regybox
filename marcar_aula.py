@@ -4,13 +4,12 @@ import datetime
 from playwright.sync_api import sync_playwright
 
 REGYBOX_URL = "https://www.regibox.pt/app/app_nova/login.php"
-BASE_URL = "https://www.regibox.pt/app/app_nova/index.php"
 NOME_BOX = "Naval Box"
 
 USERNAME = os.environ.get("REGYBOX_USER", "")
 PASSWORD = os.environ.get("REGYBOX_PASS", "")
 
-HORARIO_TARGET = "18:35"
+HORARIO_TARGET = "18:25"
 AULAS_PRIORIDADE = ["HYROX", "HIROX", "CROSSFIT", "STRENGHT", "STRENGTH"]
 
 def executar_marcacao():
@@ -60,52 +59,58 @@ def executar_marcacao():
         except Exception as e:
             print(f"⚠️ Seleção de dia: {e}")
 
-        # Rolar a página para carregar as aulas do final da tarde
+        # Rolar a página várias vezes para garantir que o bloco das 18:25 carrega totalmente na vista
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(1500)
 
         aula_marcada = False
 
-        # Tentar Inscrição por ordem de prioridade
         for modalidade in AULAS_PRIORIDADE:
             if aula_marcada:
                 break
 
             print(f"🔎 A procurar: {modalidade} às {HORARIO_TARGET}...")
 
-            # XPath flexível para capturar o card inteiro da aula
-            cards = page.locator(f"xpath=//*[contains(text(),'{HORARIO_TARGET}')]/ancestor::*[contains(@class,'card') or contains(@class,'row') or contains(@class,'item') or contains(@style,'background') or self::div][position()<=3]")
+            # Procura qualquer div/bloco que contenha a modalidade E a hora 18:25
+            seletor_bloco = f"xpath=//div[contains(translate(., 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'), '{modalidade}') and contains(., '{HORARIO_TARGET}')]"
+            blocos = page.locator(seletor_bloco)
 
-            count = cards.count()
-            for i in range(count):
-                card = cards.nth(i)
-                texto_card = card.inner_text().upper()
+            if blocos.count() > 0:
+                print(f"💡 Bloco de {modalidade} das {HORARIO_TARGET} localizado!")
+                bloco = blocos.first
+                bloco.scroll_into_view_if_needed()
 
-                if modalidade in texto_card:
-                    card.scroll_into_view_if_needed()
-                    
-                    # Procura o botão INSCREVER dentro deste card
-                    botao_inscrever = card.locator("*:has-text('INSCREVER')").first
+                # Verifica se já está inscrito
+                texto_bloco = bloco.inner_text().upper()
+                if "CANCELAR" in texto_bloco or "INSCRITO" in texto_bloco:
+                    print(f"🎉 JÁ ESTÁS INSCRITO em {modalidade} às {HORARIO_TARGET}!")
+                    aula_marcada = True
+                    break
 
-                    if botao_inscrever.is_visible():
-                        print(f"🎯 Aula de {modalidade} encontrada! A clicar em INSCREVER...")
-                        botao_inscrever.click(force=True)
-                        page.wait_for_timeout(3000)
+                # Tenta clicar no botão INSCREVER dentro desse bloco
+                botao = bloco.locator("text='INSCREVER'").first
+                if not botao.is_visible():
+                    botao = bloco.locator("button, a, div").filter(has_text="INSCREVER").first
 
-                        conteudo = page.content().lower()
-                        if "cancelar" in conteudo or "inscrito" in conteudo or "sucesso" in conteudo:
-                            print(f"🎉 SUCESSO: Inscrito na aula de {modalidade} às {HORARIO_TARGET}!")
-                            aula_marcada = True
-                            break
-                        else:
-                            print(f"⚠️ Botão clicado, a verificar confirmação...")
-                            aula_marcada = True
-                            break
-                    else:
-                        print(f"⏳ Aula de {modalidade} às {HORARIO_TARGET} encontrada, mas já está inscrita ou sem botão ativo.")
+                if botao.is_visible():
+                    print(f"🎯 Botão INSCREVER encontrado! A clicar...")
+                    botao.click(force=True)
+                    page.wait_for_timeout(3000)
+                    print(f"🎉 SUCESSO: Inscrição enviada para {modalidade} às {HORARIO_TARGET}!")
+                    aula_marcada = True
+                    break
+
+        # Backup: Se o seletor por bloco falhar, tenta clicar diretamente no botão INSCREVER que esteja ao lado das 18:25
+        if not aula_marcada:
+            print("🔄 A tentar método de recurso (busca direta pelo botão)...")
+            botao_directo = page.locator(f"xpath=//*[contains(., '{HORARIO_TARGET}')]//text()[contains(., 'INSCREVER')]/parent::* | //*[contains(., '{HORARIO_TARGET}')]//button[contains(., 'INSCREVER')]").first
+            if botao_directo.is_visible():
+                botao_directo.click(force=True)
+                print(f"🎉 SUCESSO: Botão clicado via método direto para as {HORARIO_TARGET}!")
+                aula_marcada = True
 
         if not aula_marcada:
-            print(f"❌ Nenhuma aula correspondente às {HORARIO_TARGET} foi marcada.")
+            print(f"❌ Não foi possível realizar a inscrição para as {HORARIO_TARGET}.")
 
         browser.close()
 
