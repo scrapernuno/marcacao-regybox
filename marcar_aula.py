@@ -37,7 +37,7 @@ PASSWORD = os.environ.get("REGYBOX_PASS", "").strip()
 TIMEZONE = ZoneInfo("Atlantic/Madeira")
 
 # A inscrição pretendida é para daqui a três dias.
-DIAS_ANTECEDENCIA = 3
+DIAS_ANTECEDENCIA = 4
 
 HORA_ALVO = "18:25"
 
