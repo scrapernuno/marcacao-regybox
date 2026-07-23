@@ -36,12 +36,12 @@ PASSWORD = os.environ.get("REGYBOX_PASS", "").strip()
 
 TIMEZONE = ZoneInfo("Atlantic/Madeira")
 
-# A aula é procurada quatro dias depois da execução.
-DIAS_ANTECEDENCIA = 4
+# A inscrição pretendida é para daqui a três dias.
+DIAS_ANTECEDENCIA = 3
 
 HORA_ALVO = "18:25"
 
-# Ordem obrigatória.
+# Ordem de prioridade.
 PRIORIDADES = [
     "HYROX",
     "HIROX",
@@ -68,7 +68,7 @@ HEADERS_HTTP = {
 
 
 # ============================================================
-# MODELO DE AULA
+# MODELO
 # ============================================================
 
 @dataclass
@@ -140,36 +140,163 @@ def normalizar_upper(texto: str) -> str:
     return normalizar_texto(texto).upper()
 
 
+def guardar_diagnostico_pagina(
+    page,
+    nome: str,
+) -> None:
+    preparar_diagnostico()
+
+    try:
+        page.screenshot(
+            path=str(
+                PASTA_DIAGNOSTICO
+                / f"{nome}.png"
+            ),
+            full_page=True,
+        )
+    except Exception as exc:
+        print(
+            f"⚠️ Falha ao guardar screenshot: {exc}"
+        )
+
+    try:
+        guardar_texto(
+            f"{nome}.html",
+            page.content(),
+        )
+    except Exception as exc:
+        print(
+            f"⚠️ Falha ao guardar HTML: {exc}"
+        )
+
+    try:
+        guardar_texto(
+            f"{nome}.txt",
+            page.locator("body").inner_text(),
+        )
+    except Exception as exc:
+        print(
+            f"⚠️ Falha ao guardar texto: {exc}"
+        )
+
+
+def inventariar_elementos_login(page) -> None:
+    inventario = page.evaluate(
+        """
+        () => {
+            function dados(elemento) {
+                const attrs = {};
+
+                for (const atributo of elemento.attributes || []) {
+                    attrs[atributo.name] = atributo.value;
+                }
+
+                return {
+                    tag: elemento.tagName,
+                    texto: (
+                        elemento.innerText
+                        || elemento.value
+                        || elemento.textContent
+                        || ""
+                    )
+                    .replace(/\\s+/g, " ")
+                    .trim()
+                    .substring(0, 300),
+                    visivel: Boolean(
+                        elemento.offsetWidth
+                        || elemento.offsetHeight
+                        || elemento.getClientRects().length
+                    ),
+                    atributos: attrs
+                };
+            }
+
+            return {
+                url: window.location.href,
+                titulo: document.title,
+                inputs: Array.from(
+                    document.querySelectorAll("input")
+                ).map(dados),
+                botoes: Array.from(
+                    document.querySelectorAll(
+                        "button, input[type='button'], "
+                        + "input[type='submit']"
+                    )
+                ).map(dados),
+                selects: Array.from(
+                    document.querySelectorAll("select")
+                ).map(dados),
+                links: Array.from(
+                    document.querySelectorAll("a")
+                )
+                .map(dados)
+                .filter(item =>
+                    item.texto
+                    || item.atributos.href
+                )
+                .slice(0, 200),
+                naval: Array.from(
+                    document.querySelectorAll("body *")
+                )
+                .filter(elemento => {
+                    const texto = (
+                        elemento.textContent || ""
+                    ).toUpperCase();
+
+                    return texto.includes("NAVAL");
+                })
+                .map(dados)
+                .slice(0, 100)
+            };
+        }
+        """
+    )
+
+    guardar_json(
+        "diagnostico_login_elementos.json",
+        inventario,
+    )
+
+
 # ============================================================
-# AUTENTICAÇÃO COM PLAYWRIGHT
+# FUNÇÕES PLAYWRIGHT
 # ============================================================
 
-def preencher_primeiro_visivel(locator, valor: str) -> bool:
+def preencher_primeiro_visivel(
+    locator,
+    valor: str,
+) -> bool:
     try:
         total = locator.count()
     except Exception:
         return False
 
-    for indice in range(min(total, 30)):
+    for indice in range(min(total, 50)):
         elemento = locator.nth(indice)
 
         try:
-            if elemento.is_visible():
-                elemento.fill(valor)
-                return True
+            if not elemento.is_visible():
+                continue
+
+            elemento.fill(valor)
+            return True
+
         except Exception:
             continue
 
     return False
 
 
-def clicar_primeiro_visivel(locator, timeout: int = 5000) -> bool:
+def clicar_primeiro_visivel(
+    locator,
+    timeout: int = 5000,
+) -> bool:
     try:
         total = locator.count()
     except Exception:
         return False
 
-    for indice in range(min(total, 30)):
+    for indice in range(min(total, 50)):
         elemento = locator.nth(indice)
 
         try:
@@ -182,6 +309,7 @@ def clicar_primeiro_visivel(locator, timeout: int = 5000) -> bool:
 
             elemento.click(
                 timeout=timeout,
+                force=True,
             )
 
             return True
@@ -192,67 +320,295 @@ def clicar_primeiro_visivel(locator, timeout: int = 5000) -> bool:
     return False
 
 
+def campos_login_visiveis(page) -> bool:
+    password = page.locator(
+        "input[type='password'], "
+        "input[name*='pass' i]"
+    )
+
+    try:
+        return (
+            password.count() > 0
+            and password.first.is_visible()
+        )
+    except Exception:
+        return False
+
+
+def esperar_login_ou_selecao_box(page) -> None:
+    for tentativa in range(1, 16):
+        if campos_login_visiveis(page):
+            print(
+                "ℹ️ O formulário de login "
+                "já está visível."
+            )
+            return
+
+        try:
+            texto = normalizar_upper(
+                page.locator("body").inner_text(
+                    timeout=3000
+                )
+            )
+        except Exception:
+            texto = ""
+
+        if (
+            "NAVAL BOX" in texto
+            or "PROCURA" in texto
+            or "PESQUISA" in texto
+        ):
+            return
+
+        print(
+            f"⏳ A aguardar o ecrã inicial "
+            f"da Regibox ({tentativa}/15)..."
+        )
+
+        page.wait_for_timeout(1000)
+
+
 def selecionar_box_playwright(page) -> None:
     print(
         f"🔍 A selecionar a Box: {NOME_BOX}..."
     )
 
-    campos = page.locator(
-        "input[placeholder*='Procura' i], "
-        "input[placeholder*='box' i], "
-        "input[placeholder*='ginásio' i], "
-        "input[type='text']"
+    esperar_login_ou_selecao_box(page)
+
+    # Algumas vezes a Regibox mantém a Box anterior
+    # e apresenta logo o formulário de login.
+    if campos_login_visiveis(page):
+        print(
+            "✅ Formulário de login já disponível; "
+            "a Box pode estar selecionada."
+        )
+        return
+
+    seletores_campos = [
+        "input[placeholder*='Procura' i]",
+        "input[placeholder*='Pesquisar' i]",
+        "input[placeholder*='Pesquisa' i]",
+        "input[placeholder*='box' i]",
+        "input[placeholder*='ginásio' i]",
+        "input[placeholder*='ginasio' i]",
+        "input[type='search']",
+        "input[type='text']",
+    ]
+
+    for tentativa in range(1, 6):
+        print(
+            f"🔄 Tentativa de selecionar Box "
+            f"{tentativa}/5..."
+        )
+
+        for seletor in seletores_campos:
+            campos = page.locator(seletor)
+
+            try:
+                total = campos.count()
+            except Exception:
+                total = 0
+
+            for indice in range(min(total, 30)):
+                campo = campos.nth(indice)
+
+                try:
+                    if not campo.is_visible():
+                        continue
+
+                    campo.scroll_into_view_if_needed()
+                    campo.click(force=True)
+                    campo.fill("")
+                    campo.fill(NOME_BOX)
+
+                    page.wait_for_timeout(1500)
+
+                    opcoes = [
+                        page.get_by_text(
+                            NOME_BOX,
+                            exact=True,
+                        ),
+                        page.get_by_text(
+                            NOME_BOX,
+                            exact=False,
+                        ),
+                        page.locator(
+                            "text=Naval Box"
+                        ),
+                        page.locator(
+                            "[onclick]:has-text('Naval')"
+                        ),
+                        page.locator(
+                            "li:has-text('Naval')"
+                        ),
+                        page.locator(
+                            "div:has-text('Naval Box')"
+                        ),
+                    ]
+
+                    for opcao in opcoes:
+                        if clicar_primeiro_visivel(
+                            opcao,
+                            timeout=3000,
+                        ):
+                            page.wait_for_timeout(1500)
+
+                            if campos_login_visiveis(page):
+                                print(
+                                    "✅ Box selecionada."
+                                )
+                                return
+
+                            print(
+                                "✅ Opção Naval Box clicada."
+                            )
+
+                            return
+
+                except Exception:
+                    continue
+
+        # Fallback: clicar diretamente em qualquer
+        # elemento visível cujo texto seja Naval Box.
+        resultado = page.evaluate(
+            """
+            nomeBox => {
+                function normalizar(texto) {
+                    return (texto || "")
+                        .replace(/\\s+/g, " ")
+                        .trim()
+                        .toUpperCase();
+                }
+
+                function visivel(elemento) {
+                    if (!elemento) {
+                        return false;
+                    }
+
+                    const estilo =
+                        window.getComputedStyle(elemento);
+
+                    const rect =
+                        elemento.getBoundingClientRect();
+
+                    return (
+                        estilo.display !== "none"
+                        && estilo.visibility !== "hidden"
+                        && rect.width > 0
+                        && rect.height > 0
+                    );
+                }
+
+                const alvo =
+                    normalizar(nomeBox);
+
+                const candidatos =
+                    Array.from(
+                        document.querySelectorAll("body *")
+                    )
+                    .filter(elemento => {
+                        return (
+                            visivel(elemento)
+                            && normalizar(
+                                elemento.textContent
+                            ) === alvo
+                        );
+                    });
+
+                candidatos.sort((a, b) => {
+                    const ra =
+                        a.getBoundingClientRect();
+
+                    const rb =
+                        b.getBoundingClientRect();
+
+                    return (
+                        ra.width * ra.height
+                        -
+                        rb.width * rb.height
+                    );
+                });
+
+                if (candidatos.length === 0) {
+                    return {
+                        sucesso: false,
+                        total: 0
+                    };
+                }
+
+                const candidato =
+                    candidatos[0];
+
+                const clicavel =
+                    candidato.closest(
+                        "button, a, li, "
+                        + "[onclick], "
+                        + "[role='button']"
+                    )
+                    || candidato;
+
+                clicavel.scrollIntoView({
+                    block: "center",
+                    inline: "center"
+                });
+
+                clicavel.click();
+
+                return {
+                    sucesso: true,
+                    tag: clicavel.tagName,
+                    classe:
+                        clicavel.className || "",
+                    texto:
+                        normalizar(
+                            clicavel.textContent
+                        ),
+                    total:
+                        candidatos.length
+                };
+            }
+            """,
+            NOME_BOX,
+        )
+
+        print(
+            f"🔧 Fallback Naval Box: {resultado}"
+        )
+
+        if resultado.get("sucesso"):
+            page.wait_for_timeout(2000)
+
+            if campos_login_visiveis(page):
+                print("✅ Box selecionada.")
+                return
+
+        page.reload(
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+
+        page.wait_for_timeout(3000)
+
+    guardar_diagnostico_pagina(
+        page,
+        "erro_selecao_box",
     )
 
-    try:
-        total = campos.count()
-    except Exception:
-        total = 0
-
-    for indice in range(min(total, 20)):
-        campo = campos.nth(indice)
-
-        try:
-            if not campo.is_visible():
-                continue
-
-            campo.fill(NOME_BOX)
-            page.wait_for_timeout(1000)
-
-            opcoes = [
-                page.get_by_text(
-                    NOME_BOX,
-                    exact=True,
-                ),
-                page.get_by_text(
-                    NOME_BOX,
-                    exact=False,
-                ),
-            ]
-
-            for opcao in opcoes:
-                if clicar_primeiro_visivel(
-                    opcao,
-                    timeout=3000,
-                ):
-                    print("✅ Box selecionada.")
-                    page.wait_for_timeout(1000)
-                    return
-
-        except Exception:
-            continue
+    inventariar_elementos_login(page)
 
     raise RuntimeError(
-        f"Não foi possível selecionar a Box "
-        f"'{NOME_BOX}'."
+        f"Não foi possível selecionar "
+        f"a Box '{NOME_BOX}'. "
+        "Foi guardado diagnóstico completo."
     )
 
 
 def autenticar_com_playwright() -> list[dict]:
     print(
-        "🔐 A autenticar com Playwright, "
-        "tal como no script anterior..."
+        "🔐 A autenticar com Playwright..."
     )
+
+    preparar_diagnostico()
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
@@ -272,8 +628,14 @@ def autenticar_com_playwright() -> list[dict]:
             timezone_id="Atlantic/Madeira",
         )
 
+        context.tracing.start(
+            screenshots=True,
+            snapshots=True,
+            sources=True,
+        )
+
         page = context.new_page()
-        page.set_default_timeout(7000)
+        page.set_default_timeout(8000)
 
         page.on(
             "pageerror",
@@ -286,10 +648,15 @@ def autenticar_com_playwright() -> list[dict]:
             page.goto(
                 LOGIN_URL,
                 wait_until="domcontentloaded",
-                timeout=30000,
+                timeout=60000,
             )
 
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(5000)
+
+            guardar_diagnostico_pagina(
+                page,
+                "00_login_inicial",
+            )
 
             selecionar_box_playwright(page)
 
@@ -302,20 +669,29 @@ def autenticar_com_playwright() -> list[dict]:
                 "input[name*='user' i], "
                 "input[name*='email' i], "
                 "input[placeholder*='mail' i], "
-                "input[placeholder*='utilizador' i]"
+                "input[placeholder*='utilizador' i], "
+                "input[autocomplete='username']"
             )
 
             campo_password = page.locator(
                 "input[type='password'], "
                 "input[name*='pass' i], "
                 "input[placeholder*='password' i], "
-                "input[placeholder*='senha' i]"
+                "input[placeholder*='senha' i], "
+                "input[autocomplete='current-password']"
             )
 
             if not preencher_primeiro_visivel(
                 campo_utilizador,
                 USERNAME,
             ):
+                guardar_diagnostico_pagina(
+                    page,
+                    "erro_campo_utilizador",
+                )
+
+                inventariar_elementos_login(page)
+
                 raise RuntimeError(
                     "Campo de utilizador/e-mail "
                     "não encontrado."
@@ -325,6 +701,13 @@ def autenticar_com_playwright() -> list[dict]:
                 campo_password,
                 PASSWORD,
             ):
+                guardar_diagnostico_pagina(
+                    page,
+                    "erro_campo_password",
+                )
+
+                inventariar_elementos_login(page)
+
                 raise RuntimeError(
                     "Campo de password não encontrado."
                 )
@@ -334,6 +717,7 @@ def autenticar_com_playwright() -> list[dict]:
             botoes_login = page.locator(
                 "button:has-text('LOGIN'), "
                 "button:has-text('ENTRAR'), "
+                "button:has-text('INICIAR'), "
                 "input[type='submit'], "
                 "input[value*='LOGIN' i], "
                 "input[value*='ENTRAR' i]"
@@ -351,7 +735,7 @@ def autenticar_com_playwright() -> list[dict]:
                         r"/app/app_nova/index\.php",
                         re.IGNORECASE,
                     ),
-                    timeout=20000,
+                    timeout=25000,
                 )
             except PlaywrightTimeoutError:
                 try:
@@ -369,24 +753,18 @@ def autenticar_com_playwright() -> list[dict]:
             )
 
             if "login.php" in page.url.lower():
-                page.screenshot(
-                    path=str(
-                        PASTA_DIAGNOSTICO
-                        / "erro_login.png"
-                    ),
-                    full_page=True,
+                guardar_diagnostico_pagina(
+                    page,
+                    "erro_login",
                 )
 
                 raise RuntimeError(
                     "O login não foi concluído."
                 )
 
-            page.screenshot(
-                path=str(
-                    PASTA_DIAGNOSTICO
-                    / "01_login_concluido.png"
-                ),
-                full_page=True,
+            guardar_diagnostico_pagina(
+                page,
+                "01_login_concluido",
             )
 
             cookies = context.cookies()
@@ -399,7 +777,7 @@ def autenticar_com_playwright() -> list[dict]:
             )
 
             print(
-                "🍪 Cookies obtidos automaticamente: "
+                "🍪 Cookies obtidos: "
                 + ", ".join(nomes_cookies)
             )
 
@@ -411,36 +789,45 @@ def autenticar_com_playwright() -> list[dict]:
                 },
             )
 
-            cookies_obrigatorios = {
+            obrigatorios = {
                 "PHPSESSID",
                 "regybox_user",
             }
 
             faltantes = (
-                cookies_obrigatorios
+                obrigatorios
                 - set(nomes_cookies)
             )
 
             if faltantes:
                 raise RuntimeError(
-                    "A autenticação abriu a aplicação, "
-                    "mas não criou os cookies: "
+                    "Faltam os cookies: "
                     + ", ".join(sorted(faltantes))
                 )
 
             print(
-                "✅ Autenticação Playwright concluída."
+                "✅ Autenticação concluída."
             )
 
             return cookies
 
         finally:
+            try:
+                context.tracing.stop(
+                    path=str(
+                        PASTA_DIAGNOSTICO
+                        / "trace_login.zip"
+                    )
+                )
+            except Exception:
+                pass
+
             context.close()
             browser.close()
 
 
 # ============================================================
-# TRANSFERÊNCIA DOS COOKIES PARA REQUESTS
+# SESSÃO HTTP
 # ============================================================
 
 def criar_sessao_http(
@@ -496,15 +883,11 @@ def criar_sessao_http(
 
         sessao.cookies.set(**kwargs)
 
-    cookies_atuais = sessao.cookies.get_dict()
-
-    regybox_user = cookies_atuais.get(
+    regybox_user = sessao.cookies.get_dict().get(
         "regybox_user"
     )
 
     if regybox_user:
-        # Algumas chamadas internas esperam
-        # também este cookie.
         sessao.cookies.set(
             "regybox_boxes",
             f"*{regybox_user}",
@@ -513,15 +896,8 @@ def criar_sessao_http(
         )
 
     print(
-        "🔄 Cookies transferidos para "
-        "a sessão HTTP."
-    )
-
-    print(
-        "🍪 Sessão HTTP contém: "
-        + ", ".join(
-            sorted(sessao.cookies.get_dict())
-        )
+        "🔄 Cookies transferidos "
+        "para a sessão HTTP."
     )
 
     return sessao
@@ -538,13 +914,11 @@ def ativar_sessao_http(
 
     if not regybox_user:
         raise RuntimeError(
-            "O cookie regybox_user não existe "
-            "na sessão HTTP."
+            "Cookie regybox_user não encontrado."
         )
 
     print(
-        "🔧 A ativar a sessão interna "
-        "da Naval Box..."
+        "🔧 A ativar a sessão interna..."
     )
 
     resposta = sessao.get(
@@ -566,7 +940,7 @@ def ativar_sessao_http(
     )
 
     print(
-        f"✅ Sessão interna ativada "
+        f"✅ Sessão ativada "
         f"(HTTP {resposta.status_code})."
     )
 
@@ -584,7 +958,6 @@ def timestamp_data(data_alvo) -> int:
         data_alvo.day,
         0,
         0,
-        0,
         tzinfo=TIMEZONE,
     )
 
@@ -596,15 +969,14 @@ def timestamp_data(data_alvo) -> int:
 def resposta_e_login(
     resposta: requests.Response,
 ) -> bool:
-    url_final = resposta.url.lower()
     texto = resposta.text.lower()
+    url = resposta.url.lower()
 
     return (
-        "login.php" in url_final
+        "login.php" in url
         or "app/app_nova/login.php" in texto
         or (
-            "input" in texto
-            and "type=\"password\"" in texto
+            "type=\"password\"" in texto
             and "verifica_acesso" in texto
         )
     )
@@ -618,8 +990,8 @@ def obter_html_aulas(
     data_iso = data_alvo.isoformat()
 
     print(
-        f"📡 A obter as aulas de "
-        f"{data_iso} diretamente..."
+        f"📡 A obter as aulas "
+        f"de {data_iso}..."
     )
 
     resposta = sessao.get(
@@ -647,30 +1019,18 @@ def obter_html_aulas(
     )
 
     guardar_json(
-        "03_aulas_resposta_metadata.json",
+        "03_aulas_metadata.json",
         {
-            "url_final": resposta.url,
+            "url": resposta.url,
             "status": resposta.status_code,
-            "historico": [
-                {
-                    "status": item.status_code,
-                    "url": item.url,
-                    "location": item.headers.get(
-                        "Location"
-                    ),
-                }
-                for item in resposta.history
-            ],
-            "cookies": sorted(
-                sessao.cookies.get_dict()
-            ),
+            "bytes": len(resposta.content),
         },
     )
 
     if resposta_e_login(resposta):
         raise RuntimeError(
-            "A sessão autenticada pelo navegador "
-            "não foi aceite na consulta das aulas."
+            "A sessão não foi aceite "
+            "na consulta das aulas."
         )
 
     print(
@@ -682,7 +1042,7 @@ def obter_html_aulas(
 
 
 # ============================================================
-# PARSING
+# PARSING DAS AULAS
 # ============================================================
 
 def classes_do_elemento(
@@ -774,21 +1134,19 @@ def extrair_capacidade(
     if not correspondencia:
         return None, None
 
-    ocupacao = int(
+    atual = int(
         correspondencia.group(1)
     )
 
-    capacidade_texto = (
-        correspondencia.group(2)
-    )
+    maxima_texto = correspondencia.group(2)
 
-    capacidade = (
+    maxima = (
         None
-        if capacidade_texto == "∞"
-        else int(capacidade_texto)
+        if maxima_texto == "∞"
+        else int(maxima_texto)
     )
 
-    return ocupacao, capacidade
+    return atual, maxima
 
 
 def extrair_urls(
@@ -1096,8 +1454,7 @@ def escolher_aula(
 
         print(
             f"🎉 Já está inscrito em "
-            f"{escolhida.nome} às "
-            f"{HORA_ALVO}."
+            f"{escolhida.nome}."
         )
 
         return escolhida
@@ -1110,9 +1467,8 @@ def escolher_aula(
 
     if not abertas:
         raise RuntimeError(
-            "As modalidades prioritárias foram "
-            "encontradas, mas nenhuma possui "
-            "botão de inscrição."
+            "As aulas prioritárias existem, "
+            "mas nenhuma está aberta."
         )
 
     escolhida = abertas[0]
@@ -1143,19 +1499,17 @@ def validar_url_inscricao(
         != "www.regibox.pt"
     ):
         raise RuntimeError(
-            "O URL de inscrição aponta para "
-            "um domínio inesperado."
+            "URL de inscrição inesperado."
         )
 
-    caminho_esperado = (
+    caminho = (
         "/app/app_nova/php/aulas/"
         "marca_aulas.php"
     )
 
-    if parsed.path != caminho_esperado:
+    if parsed.path != caminho:
         raise RuntimeError(
-            "O URL de inscrição aponta para "
-            "um endpoint inesperado."
+            "Endpoint de inscrição inesperado."
         )
 
     parametros = parse_qs(
@@ -1177,8 +1531,8 @@ def validar_url_inscricao(
         and data_url != data_iso
     ):
         raise RuntimeError(
-            f"A data do URL é {data_url}, "
-            f"mas a data alvo é {data_iso}."
+            f"Data do URL incorreta: "
+            f"{data_url} != {data_iso}."
         )
 
 
@@ -1230,8 +1584,8 @@ def inscrever(
 
     if not aula.url_inscrever:
         raise RuntimeError(
-            "A aula selecionada não possui "
-            "URL de inscrição."
+            "A aula não possui URL "
+            "de inscrição."
         )
 
     validar_url_inscricao(
@@ -1404,7 +1758,8 @@ def executar() -> int:
     )
 
     print(
-        f"📅 Data alvo (+4 dias): "
+        f"📅 Data alvo "
+        f"(+{DIAS_ANTECEDENCIA} dias): "
         f"{data_alvo.strftime('%d/%m/%Y')}"
     )
 
