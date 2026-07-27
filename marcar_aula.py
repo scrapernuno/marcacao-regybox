@@ -1,10 +1,12 @@
 import json
 import os
 import re
+import smtplib
 import sys
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -12,10 +14,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup, Tag
-from playwright.sync_api import (
-    TimeoutError as PlaywrightTimeoutError,
-    sync_playwright,
-)
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -36,12 +36,12 @@ PASSWORD = os.environ.get("REGYBOX_PASS", "").strip()
 
 TIMEZONE = ZoneInfo("Atlantic/Madeira")
 
-# A inscrição pretendida é para daqui a três dias.
+# Procurar a aula daqui a 3 dias.
 DIAS_ANTECEDENCIA = 3
 
 HORA_ALVO = "18:25"
 
-# Ordem de prioridade.
+# Ordem de preferência.
 PRIORIDADES = [
     "HYROX",
     "HIROX",
@@ -56,7 +56,6 @@ PASTA_DIAGNOSTICO = Path("diagnostico_regybox")
 HEADERS_HTTP = {
     "Accept": "text/html, */*; q=0.01",
     "Accept-Language": "pt-PT,pt;q=0.9,en;q=0.8",
-    "DNT": "1",
     "Referer": BASE_URL,
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) "
@@ -91,22 +90,16 @@ class Aula:
 
 
 # ============================================================
-# DIAGNÓSTICO
+# UTILITÁRIOS E DIAGNÓSTICO
 # ============================================================
 
 def preparar_diagnostico() -> None:
-    PASTA_DIAGNOSTICO.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    PASTA_DIAGNOSTICO.mkdir(parents=True, exist_ok=True)
 
 
 def guardar_texto(nome: str, conteudo: str) -> None:
     preparar_diagnostico()
-
-    (
-        PASTA_DIAGNOSTICO / nome
-    ).write_text(
+    (PASTA_DIAGNOSTICO / nome).write_text(
         conteudo,
         encoding="utf-8",
     )
@@ -114,10 +107,7 @@ def guardar_texto(nome: str, conteudo: str) -> None:
 
 def guardar_json(nome: str, conteudo) -> None:
     preparar_diagnostico()
-
-    (
-        PASTA_DIAGNOSTICO / nome
-    ).write_text(
+    (PASTA_DIAGNOSTICO / nome).write_text(
         json.dumps(
             conteudo,
             ensure_ascii=False,
@@ -129,45 +119,28 @@ def guardar_json(nome: str, conteudo) -> None:
 
 
 def normalizar_texto(texto: str) -> str:
-    return " ".join(
-        (texto or "")
-        .replace("\xa0", " ")
-        .split()
-    )
+    return " ".join((texto or "").replace("\xa0", " ").split())
 
 
 def normalizar_upper(texto: str) -> str:
     return normalizar_texto(texto).upper()
 
 
-def guardar_diagnostico_pagina(
-    page,
-    nome: str,
-) -> None:
+def guardar_diagnostico_pagina(page, nome: str) -> None:
     preparar_diagnostico()
 
     try:
         page.screenshot(
-            path=str(
-                PASTA_DIAGNOSTICO
-                / f"{nome}.png"
-            ),
+            path=str(PASTA_DIAGNOSTICO / f"{nome}.png"),
             full_page=True,
         )
     except Exception as exc:
-        print(
-            f"⚠️ Falha ao guardar screenshot: {exc}"
-        )
+        print(f"⚠️ Falha ao guardar screenshot {nome}: {exc}")
 
     try:
-        guardar_texto(
-            f"{nome}.html",
-            page.content(),
-        )
+        guardar_texto(f"{nome}.html", page.content())
     except Exception as exc:
-        print(
-            f"⚠️ Falha ao guardar HTML: {exc}"
-        )
+        print(f"⚠️ Falha ao guardar HTML {nome}: {exc}")
 
     try:
         guardar_texto(
@@ -175,9 +148,7 @@ def guardar_diagnostico_pagina(
             page.locator("body").inner_text(),
         )
     except Exception as exc:
-        print(
-            f"⚠️ Falha ao guardar texto: {exc}"
-        )
+        print(f"⚠️ Falha ao guardar texto {nome}: {exc}")
 
 
 def inventariar_elementos_login(page) -> None:
@@ -185,10 +156,9 @@ def inventariar_elementos_login(page) -> None:
         """
         () => {
             function dados(elemento) {
-                const attrs = {};
-
+                const atributos = {};
                 for (const atributo of elemento.attributes || []) {
-                    attrs[atributo.name] = atributo.value;
+                    atributos[atributo.name] = atributo.value;
                 }
 
                 return {
@@ -207,7 +177,7 @@ def inventariar_elementos_login(page) -> None:
                         || elemento.offsetHeight
                         || elemento.getClientRects().length
                     ),
-                    atributos: attrs
+                    atributos: atributos
                 };
             }
 
@@ -219,32 +189,20 @@ def inventariar_elementos_login(page) -> None:
                 ).map(dados),
                 botoes: Array.from(
                     document.querySelectorAll(
-                        "button, input[type='button'], "
-                        + "input[type='submit']"
+                        "button, input[type='button'], input[type='submit']"
                     )
                 ).map(dados),
                 selects: Array.from(
                     document.querySelectorAll("select")
                 ).map(dados),
-                links: Array.from(
-                    document.querySelectorAll("a")
-                )
-                .map(dados)
-                .filter(item =>
-                    item.texto
-                    || item.atributos.href
-                )
-                .slice(0, 200),
                 naval: Array.from(
                     document.querySelectorAll("body *")
                 )
-                .filter(elemento => {
-                    const texto = (
-                        elemento.textContent || ""
-                    ).toUpperCase();
-
-                    return texto.includes("NAVAL");
-                })
+                .filter(elemento =>
+                    (elemento.textContent || "")
+                    .toUpperCase()
+                    .includes("NAVAL")
+                )
                 .map(dados)
                 .slice(0, 100)
             };
@@ -252,20 +210,104 @@ def inventariar_elementos_login(page) -> None:
         """
     )
 
-    guardar_json(
-        "diagnostico_login_elementos.json",
-        inventario,
+    guardar_json("diagnostico_login_elementos.json", inventario)
+
+
+# ============================================================
+# EMAIL
+# ============================================================
+
+def enviar_email_confirmacao(
+    aula: Aula,
+    data_alvo,
+    estado: str,
+) -> None:
+    smtp_host = os.environ.get("EMAIL_SMTP_HOST", "").strip()
+    smtp_port_texto = os.environ.get("EMAIL_SMTP_PORT", "587").strip()
+    email_user = os.environ.get("EMAIL_USER", "").strip()
+    email_password = os.environ.get("EMAIL_APP_PASSWORD", "").strip()
+    email_to = os.environ.get("EMAIL_TO", "").strip()
+
+    if not all(
+        [
+            smtp_host,
+            smtp_port_texto,
+            email_user,
+            email_password,
+            email_to,
+        ]
+    ):
+        print(
+            "ℹ️ Email de confirmação não configurado. "
+            "A marcação continuará sem envio de email."
+        )
+        return
+
+    try:
+        smtp_port = int(smtp_port_texto)
+    except ValueError:
+        print(
+            "⚠️ EMAIL_SMTP_PORT inválido. "
+            "A marcação foi confirmada, mas o email não foi enviado."
+        )
+        return
+
+    capacidade = (
+        f"{aula.ocupacao_atual}/{aula.capacidade_maxima}"
+        if aula.ocupacao_atual is not None
+        and aula.capacidade_maxima is not None
+        else "Não disponível"
     )
 
+    mensagem = EmailMessage()
+    mensagem["Subject"] = (
+        f"Regibox: {estado} — {aula.nome} às {aula.inicio}"
+    )
+    mensagem["From"] = email_user
+    mensagem["To"] = email_to
+    mensagem.set_content(
+        "\n".join(
+            [
+                "A marcação na Regibox foi confirmada.",
+                "",
+                f"Estado: {estado}",
+                f"Aula: {aula.nome}",
+                f"Data: {data_alvo.strftime('%d/%m/%Y')}",
+                f"Hora: {aula.inicio} - {aula.fim}",
+                f"Ocupação: {capacidade}",
+                "",
+                "Mensagem enviada automaticamente pelo GitHub Actions.",
+            ]
+        )
+    )
+
+    try:
+        with smtplib.SMTP(
+            smtp_host,
+            smtp_port,
+            timeout=30,
+        ) as servidor:
+            servidor.ehlo()
+            servidor.starttls()
+            servidor.ehlo()
+            servidor.login(email_user, email_password)
+            servidor.send_message(mensagem)
+
+        print(f"📧 Email de confirmação enviado para {email_to}.")
+
+    except Exception as exc:
+        # A marcação não deve falhar só porque o email falhou.
+        print(
+            "⚠️ A marcação foi confirmada, mas o email falhou: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
 
 # ============================================================
-# FUNÇÕES PLAYWRIGHT
+# PLAYWRIGHT — LOGIN VISUAL
 # ============================================================
 
-def preencher_primeiro_visivel(
-    locator,
-    valor: str,
-) -> bool:
+def preencher_primeiro_visivel(locator, valor: str) -> bool:
     try:
         total = locator.count()
     except Exception:
@@ -275,22 +317,16 @@ def preencher_primeiro_visivel(
         elemento = locator.nth(indice)
 
         try:
-            if not elemento.is_visible():
-                continue
-
-            elemento.fill(valor)
-            return True
-
+            if elemento.is_visible():
+                elemento.fill(valor)
+                return True
         except Exception:
             continue
 
     return False
 
 
-def clicar_primeiro_visivel(
-    locator,
-    timeout: int = 5000,
-) -> bool:
+def clicar_primeiro_visivel(locator, timeout: int = 5000) -> bool:
     try:
         total = locator.count()
     except Exception:
@@ -300,20 +336,10 @@ def clicar_primeiro_visivel(
         elemento = locator.nth(indice)
 
         try:
-            elemento.wait_for(
-                state="visible",
-                timeout=timeout,
-            )
-
+            elemento.wait_for(state="visible", timeout=timeout)
             elemento.scroll_into_view_if_needed()
-
-            elemento.click(
-                timeout=timeout,
-                force=True,
-            )
-
+            elemento.click(timeout=timeout, force=True)
             return True
-
         except Exception:
             continue
 
@@ -322,15 +348,11 @@ def clicar_primeiro_visivel(
 
 def campos_login_visiveis(page) -> bool:
     password = page.locator(
-        "input[type='password'], "
-        "input[name*='pass' i]"
+        "input[type='password'], input[name*='pass' i]"
     )
 
     try:
-        return (
-            password.count() > 0
-            and password.first.is_visible()
-        )
+        return password.count() > 0 and password.first.is_visible()
     except Exception:
         return False
 
@@ -338,17 +360,12 @@ def campos_login_visiveis(page) -> bool:
 def esperar_login_ou_selecao_box(page) -> None:
     for tentativa in range(1, 16):
         if campos_login_visiveis(page):
-            print(
-                "ℹ️ O formulário de login "
-                "já está visível."
-            )
+            print("ℹ️ Formulário de login já visível.")
             return
 
         try:
             texto = normalizar_upper(
-                page.locator("body").inner_text(
-                    timeout=3000
-                )
+                page.locator("body").inner_text(timeout=3000)
             )
         except Exception:
             texto = ""
@@ -361,26 +378,21 @@ def esperar_login_ou_selecao_box(page) -> None:
             return
 
         print(
-            f"⏳ A aguardar o ecrã inicial "
-            f"da Regibox ({tentativa}/15)..."
+            f"⏳ A aguardar o ecrã inicial da Regibox "
+            f"({tentativa}/15)..."
         )
-
         page.wait_for_timeout(1000)
 
 
 def selecionar_box_playwright(page) -> None:
-    print(
-        f"🔍 A selecionar a Box: {NOME_BOX}..."
-    )
+    print(f"🔍 A selecionar a Box: {NOME_BOX}...")
 
     esperar_login_ou_selecao_box(page)
 
-    # Algumas vezes a Regibox mantém a Box anterior
-    # e apresenta logo o formulário de login.
     if campos_login_visiveis(page):
         print(
             "✅ Formulário de login já disponível; "
-            "a Box pode estar selecionada."
+            "a Box pode estar previamente selecionada."
         )
         return
 
@@ -396,10 +408,7 @@ def selecionar_box_playwright(page) -> None:
     ]
 
     for tentativa in range(1, 6):
-        print(
-            f"🔄 Tentativa de selecionar Box "
-            f"{tentativa}/5..."
-        )
+        print(f"🔄 Tentativa de selecionar Box {tentativa}/5...")
 
         for seletor in seletores_campos:
             campos = page.locator(seletor)
@@ -420,56 +429,31 @@ def selecionar_box_playwright(page) -> None:
                     campo.click(force=True)
                     campo.fill("")
                     campo.fill(NOME_BOX)
-
                     page.wait_for_timeout(1500)
 
                     opcoes = [
-                        page.get_by_text(
-                            NOME_BOX,
-                            exact=True,
-                        ),
-                        page.get_by_text(
-                            NOME_BOX,
-                            exact=False,
-                        ),
-                        page.locator(
-                            "text=Naval Box"
-                        ),
-                        page.locator(
-                            "[onclick]:has-text('Naval')"
-                        ),
-                        page.locator(
-                            "li:has-text('Naval')"
-                        ),
-                        page.locator(
-                            "div:has-text('Naval Box')"
-                        ),
+                        page.get_by_text(NOME_BOX, exact=True),
+                        page.get_by_text(NOME_BOX, exact=False),
+                        page.locator("[onclick]:has-text('Naval')"),
+                        page.locator("li:has-text('Naval')"),
                     ]
 
                     for opcao in opcoes:
-                        if clicar_primeiro_visivel(
-                            opcao,
-                            timeout=3000,
-                        ):
+                        if clicar_primeiro_visivel(opcao, timeout=3000):
                             page.wait_for_timeout(1500)
 
                             if campos_login_visiveis(page):
-                                print(
-                                    "✅ Box selecionada."
-                                )
+                                print("✅ Box selecionada.")
                                 return
 
-                            print(
-                                "✅ Opção Naval Box clicada."
-                            )
-
+                            # Em certas versões a seleção muda a página
+                            # sem o formulário ficar imediatamente visível.
+                            print("✅ Opção Naval Box clicada.")
                             return
 
                 except Exception:
                     continue
 
-        # Fallback: clicar diretamente em qualquer
-        # elemento visível cujo texto seja Naval Box.
         resultado = page.evaluate(
             """
             nomeBox => {
@@ -481,15 +465,9 @@ def selecionar_box_playwright(page) -> None:
                 }
 
                 function visivel(elemento) {
-                    if (!elemento) {
-                        return false;
-                    }
-
-                    const estilo =
-                        window.getComputedStyle(elemento);
-
-                    const rect =
-                        elemento.getBoundingClientRect();
+                    if (!elemento) return false;
+                    const estilo = window.getComputedStyle(elemento);
+                    const rect = elemento.getBoundingClientRect();
 
                     return (
                         estilo.display !== "none"
@@ -499,81 +477,51 @@ def selecionar_box_playwright(page) -> None:
                     );
                 }
 
-                const alvo =
-                    normalizar(nomeBox);
+                const alvo = normalizar(nomeBox);
 
-                const candidatos =
-                    Array.from(
-                        document.querySelectorAll("body *")
-                    )
-                    .filter(elemento => {
-                        return (
-                            visivel(elemento)
-                            && normalizar(
-                                elemento.textContent
-                            ) === alvo
-                        );
-                    });
+                const candidatos = Array.from(
+                    document.querySelectorAll("body *")
+                ).filter(elemento =>
+                    visivel(elemento)
+                    && normalizar(elemento.textContent) === alvo
+                );
 
                 candidatos.sort((a, b) => {
-                    const ra =
-                        a.getBoundingClientRect();
-
-                    const rb =
-                        b.getBoundingClientRect();
-
+                    const ra = a.getBoundingClientRect();
+                    const rb = b.getBoundingClientRect();
                     return (
                         ra.width * ra.height
-                        -
-                        rb.width * rb.height
+                        - rb.width * rb.height
                     );
                 });
 
                 if (candidatos.length === 0) {
-                    return {
-                        sucesso: false,
-                        total: 0
-                    };
+                    return {sucesso: false, total: 0};
                 }
 
-                const candidato =
-                    candidatos[0];
-
-                const clicavel =
-                    candidato.closest(
-                        "button, a, li, "
-                        + "[onclick], "
-                        + "[role='button']"
-                    )
-                    || candidato;
+                const candidato = candidatos[0];
+                const clicavel = candidato.closest(
+                    "button, a, li, [onclick], [role='button']"
+                ) || candidato;
 
                 clicavel.scrollIntoView({
                     block: "center",
                     inline: "center"
                 });
-
                 clicavel.click();
 
                 return {
                     sucesso: true,
                     tag: clicavel.tagName,
-                    classe:
-                        clicavel.className || "",
-                    texto:
-                        normalizar(
-                            clicavel.textContent
-                        ),
-                    total:
-                        candidatos.length
+                    texto: normalizar(clicavel.textContent),
+                    total: candidatos.length
                 };
             }
             """,
             NOME_BOX,
         )
 
-        print(
-            f"🔧 Fallback Naval Box: {resultado}"
-        )
+        print(f"🔧 Fallback Naval Box: {resultado}")
 
         if resultado.get("sucesso"):
             page.wait_for_timeout(2000)
@@ -586,27 +534,19 @@ def selecionar_box_playwright(page) -> None:
             wait_until="domcontentloaded",
             timeout=30000,
         )
-
         page.wait_for_timeout(3000)
 
-    guardar_diagnostico_pagina(
-        page,
-        "erro_selecao_box",
-    )
-
+    guardar_diagnostico_pagina(page, "erro_selecao_box")
     inventariar_elementos_login(page)
 
     raise RuntimeError(
-        f"Não foi possível selecionar "
-        f"a Box '{NOME_BOX}'. "
+        f"Não foi possível selecionar a Box '{NOME_BOX}'. "
         "Foi guardado diagnóstico completo."
     )
 
 
 def autenticar_com_playwright() -> list[dict]:
-    print(
-        "🔐 A autenticar com Playwright..."
-    )
+    print("🔐 A autenticar com Playwright...")
 
     preparar_diagnostico()
 
@@ -620,10 +560,7 @@ def autenticar_com_playwright() -> list[dict]:
         )
 
         context = browser.new_context(
-            viewport={
-                "width": 1440,
-                "height": 1000,
-            },
+            viewport={"width": 1440, "height": 1000},
             locale="pt-PT",
             timezone_id="Atlantic/Madeira",
         )
@@ -650,7 +587,6 @@ def autenticar_com_playwright() -> list[dict]:
                 wait_until="domcontentloaded",
                 timeout=60000,
             )
-
             page.wait_for_timeout(5000)
 
             guardar_diagnostico_pagina(
@@ -660,9 +596,7 @@ def autenticar_com_playwright() -> list[dict]:
 
             selecionar_box_playwright(page)
 
-            print(
-                "🔑 A preencher os dados de acesso..."
-            )
+            print("🔑 A preencher os dados de acesso...")
 
             campo_utilizador = page.locator(
                 "input[type='email'], "
@@ -689,12 +623,9 @@ def autenticar_com_playwright() -> list[dict]:
                     page,
                     "erro_campo_utilizador",
                 )
-
                 inventariar_elementos_login(page)
-
                 raise RuntimeError(
-                    "Campo de utilizador/e-mail "
-                    "não encontrado."
+                    "Campo de utilizador/e-mail não encontrado."
                 )
 
             if not preencher_primeiro_visivel(
@@ -705,9 +636,7 @@ def autenticar_com_playwright() -> list[dict]:
                     page,
                     "erro_campo_password",
                 )
-
                 inventariar_elementos_login(page)
-
                 raise RuntimeError(
                     "Campo de password não encontrado."
                 )
@@ -748,16 +677,13 @@ def autenticar_com_playwright() -> list[dict]:
 
             page.wait_for_timeout(3000)
 
-            print(
-                f"🌐 URL após login: {page.url}"
-            )
+            print(f"🌐 URL após login: {page.url}")
 
             if "login.php" in page.url.lower():
                 guardar_diagnostico_pagina(
                     page,
                     "erro_login",
                 )
-
                 raise RuntimeError(
                     "O login não foi concluído."
                 )
@@ -768,12 +694,8 @@ def autenticar_com_playwright() -> list[dict]:
             )
 
             cookies = context.cookies()
-
             nomes_cookies = sorted(
-                {
-                    cookie["name"]
-                    for cookie in cookies
-                }
+                {cookie["name"] for cookie in cookies}
             )
 
             print(
@@ -789,15 +711,8 @@ def autenticar_com_playwright() -> list[dict]:
                 },
             )
 
-            obrigatorios = {
-                "PHPSESSID",
-                "regybox_user",
-            }
-
-            faltantes = (
-                obrigatorios
-                - set(nomes_cookies)
-            )
+            obrigatorios = {"PHPSESSID", "regybox_user"}
+            faltantes = obrigatorios - set(nomes_cookies)
 
             if faltantes:
                 raise RuntimeError(
@@ -805,18 +720,14 @@ def autenticar_com_playwright() -> list[dict]:
                     + ", ".join(sorted(faltantes))
                 )
 
-            print(
-                "✅ Autenticação concluída."
-            )
-
+            print("✅ Autenticação concluída.")
             return cookies
 
         finally:
             try:
                 context.tracing.stop(
                     path=str(
-                        PASTA_DIAGNOSTICO
-                        / "trace_login.zip"
+                        PASTA_DIAGNOSTICO / "trace_login.zip"
                     )
                 )
             except Exception:
@@ -827,7 +738,7 @@ def autenticar_com_playwright() -> list[dict]:
 
 
 # ============================================================
-# SESSÃO HTTP
+# REQUESTS — SESSÃO E CONSULTA
 # ============================================================
 
 def criar_sessao_http(
@@ -854,9 +765,7 @@ def criar_sessao_http(
         },
     )
 
-    adaptador = HTTPAdapter(
-        max_retries=retry,
-    )
+    adaptador = HTTPAdapter(max_retries=retry)
 
     sessao = requests.Session()
     sessao.headers.update(HEADERS_HTTP)
@@ -895,9 +804,12 @@ def criar_sessao_http(
             path="/",
         )
 
+    print("🔄 Cookies transferidos para a sessão HTTP.")
     print(
-        "🔄 Cookies transferidos "
-        "para a sessão HTTP."
+        "🍪 Sessão HTTP contém: "
+        + ", ".join(
+            sorted(sessao.cookies.get_dict())
+        )
     )
 
     return sessao
@@ -906,9 +818,7 @@ def criar_sessao_http(
 def ativar_sessao_http(
     sessao: requests.Session,
 ) -> str:
-    cookies = sessao.cookies.get_dict()
-
-    regybox_user = cookies.get(
+    regybox_user = sessao.cookies.get_dict().get(
         "regybox_user"
     )
 
@@ -917,9 +827,7 @@ def ativar_sessao_http(
             "Cookie regybox_user não encontrado."
         )
 
-    print(
-        "🔧 A ativar a sessão interna..."
-    )
+    print("🔧 A ativar a sessão interna...")
 
     resposta = sessao.get(
         SET_SESSION_URL,
@@ -933,11 +841,7 @@ def ativar_sessao_http(
     )
 
     resposta.raise_for_status()
-
-    guardar_texto(
-        "02_set_session.html",
-        resposta.text,
-    )
+    guardar_texto("02_set_session.html", resposta.text)
 
     print(
         f"✅ Sessão ativada "
@@ -946,10 +850,6 @@ def ativar_sessao_http(
 
     return regybox_user
 
-
-# ============================================================
-# CONSULTA DAS AULAS
-# ============================================================
 
 def timestamp_data(data_alvo) -> int:
     instante = datetime(
@@ -961,9 +861,7 @@ def timestamp_data(data_alvo) -> int:
         tzinfo=TIMEZONE,
     )
 
-    return int(
-        instante.timestamp() * 1000
-    )
+    return int(instante.timestamp() * 1000)
 
 
 def resposta_e_login(
@@ -976,7 +874,7 @@ def resposta_e_login(
         "login.php" in url
         or "app/app_nova/login.php" in texto
         or (
-            "type=\"password\"" in texto
+            'type="password"' in texto
             and "verifica_acesso" in texto
         )
     )
@@ -989,17 +887,12 @@ def obter_html_aulas(
 ) -> str:
     data_iso = data_alvo.isoformat()
 
-    print(
-        f"📡 A obter as aulas "
-        f"de {data_iso}..."
-    )
+    print(f"📡 A obter as aulas de {data_iso}...")
 
     resposta = sessao.get(
         AULAS_URL,
         params={
-            "valor1": str(
-                timestamp_data(data_alvo)
-            ),
+            "valor1": str(timestamp_data(data_alvo)),
             "type": "",
             "source": "mes",
             "scroll": "s",
@@ -1029,8 +922,7 @@ def obter_html_aulas(
 
     if resposta_e_login(resposta):
         raise RuntimeError(
-            "A sessão não foi aceite "
-            "na consulta das aulas."
+            "A sessão não foi aceite na consulta das aulas."
         )
 
     print(
@@ -1048,10 +940,7 @@ def obter_html_aulas(
 def classes_do_elemento(
     elemento: Tag,
 ) -> set[str]:
-    classes = elemento.get(
-        "class",
-        [],
-    )
+    classes = elemento.get("class", [])
 
     if isinstance(classes, str):
         classes = classes.split()
@@ -1082,10 +971,7 @@ def encontrar_div(
             continue
 
         texto = normalizar_texto(
-            elemento.get_text(
-                " ",
-                strip=True,
-            )
+            elemento.get_text(" ", strip=True)
         )
 
         if (
@@ -1101,10 +987,7 @@ def encontrar_div(
 
 def extrair_capacidade(
     bloco: Tag,
-) -> tuple[
-    Optional[int],
-    Optional[int],
-]:
+) -> tuple[Optional[int], Optional[int]]:
     elemento = encontrar_div(
         bloco,
         align="center",
@@ -1119,10 +1002,7 @@ def extrair_capacidade(
         return None, None
 
     texto = normalizar_texto(
-        elemento.get_text(
-            " ",
-            strip=True,
-        )
+        elemento.get_text(" ", strip=True)
     )
 
     correspondencia = re.search(
@@ -1134,10 +1014,7 @@ def extrair_capacidade(
     if not correspondencia:
         return None, None
 
-    atual = int(
-        correspondencia.group(1)
-    )
-
+    atual = int(correspondencia.group(1))
     maxima_texto = correspondencia.group(2)
 
     maxima = (
@@ -1151,17 +1028,12 @@ def extrair_capacidade(
 
 def extrair_urls(
     bloco: Tag,
-) -> tuple[
-    Optional[str],
-    Optional[str],
-]:
+) -> tuple[Optional[str], Optional[str]]:
     url_inscrever = None
     url_cancelar = None
 
     for botao in bloco.find_all("button"):
-        onclick = str(
-            botao.get("onclick", "")
-        )
+        onclick = str(botao.get("onclick", ""))
 
         urls = re.findall(
             r"""[^'"\s,(]+\.php(?:\?[^'"\s,)]*)?""",
@@ -1172,31 +1044,18 @@ def extrair_urls(
         for url_bruto in urls:
             url = urljoin(
                 BASE_URL,
-                url_bruto.replace(
-                    "&amp;",
-                    "&",
-                ),
+                url_bruto.replace("&amp;", "&"),
             )
 
             parsed = urlparse(url)
+            prefixo = "/app/app_nova/php/aulas/"
 
-            prefixo = (
-                "/app/app_nova/php/aulas/"
-            )
-
-            if not parsed.path.startswith(
-                prefixo
-            ):
+            if not parsed.path.startswith(prefixo):
                 continue
 
-            if parsed.path.endswith(
-                "/marca_aulas.php"
-            ):
+            if parsed.path.endswith("/marca_aulas.php"):
                 url_inscrever = url
-
-            elif parsed.path.endswith(
-                "/cancela_aula.php"
-            ):
+            elif parsed.path.endswith("/cancela_aula.php"):
                 url_cancelar = url
 
     return url_inscrever, url_cancelar
@@ -1206,9 +1065,7 @@ def extrair_data_bloco(
     bloco: Tag,
     data_fallback: str,
 ) -> str:
-    identificador = str(
-        bloco.get("id", "")
-    )
+    identificador = str(bloco.get("id", ""))
 
     correspondencia = re.fullmatch(
         r"feed_time_slot(\d+)",
@@ -1219,9 +1076,7 @@ def extrair_data_bloco(
         return data_fallback
 
     try:
-        epoch = int(
-            correspondencia.group(1)
-        )
+        epoch = int(correspondencia.group(1))
 
         return datetime.fromtimestamp(
             epoch,
@@ -1236,10 +1091,7 @@ def parsear_aulas(
     html: str,
     data_fallback: str,
 ) -> list[Aula]:
-    soup = BeautifulSoup(
-        html,
-        "html.parser",
-    )
+    soup = BeautifulSoup(html, "html.parser")
 
     blocos = [
         elemento
@@ -1280,10 +1132,7 @@ def parsear_aulas(
             continue
 
         nome = normalizar_texto(
-            nome_elemento.get_text(
-                " ",
-                strip=True,
-            )
+            nome_elemento.get_text(" ", strip=True)
         )
 
         horario = normalizar_texto(
@@ -1305,28 +1154,16 @@ def parsear_aulas(
         inicio = correspondencia.group(1)
         fim = correspondencia.group(2)
 
-        ocupacao, capacidade = (
-            extrair_capacidade(bloco)
-        )
-
-        (
-            url_inscrever,
-            url_cancelar,
-        ) = extrair_urls(bloco)
+        ocupacao, capacidade = extrair_capacidade(bloco)
+        url_inscrever, url_cancelar = extrair_urls(bloco)
 
         texto_bloco = normalizar_texto(
-            bloco.get_text(
-                " ",
-                strip=True,
-            )
+            bloco.get_text(" ", strip=True)
         )
 
         inscrito = bool(
             url_cancelar
-            or bloco.find(
-                "div",
-                class_="ok_color",
-            )
+            or bloco.find("div", class_="ok_color")
         )
 
         lista_espera = bool(
@@ -1360,10 +1197,7 @@ def parsear_aulas(
 
     guardar_json(
         "04_aulas_parseadas.json",
-        [
-            asdict(aula)
-            for aula in aulas
-        ],
+        [asdict(aula) for aula in aulas],
     )
 
     return aulas
@@ -1376,9 +1210,7 @@ def parsear_aulas(
 def prioridade(nome: str) -> int:
     nome_upper = nome.upper()
 
-    for indice, modalidade in enumerate(
-        PRIORIDADES
-    ):
+    for indice, modalidade in enumerate(PRIORIDADES):
         if modalidade in nome_upper:
             return indice
 
@@ -1431,32 +1263,27 @@ def escolher_aula(
 
     if not candidatas:
         raise RuntimeError(
-            f"Não existe HYROX, CROSSFIT "
-            f"ou STRENGHT às {HORA_ALVO} "
+            f"Não existe HYROX, CROSSFIT ou "
+            f"STRENGHT às {HORA_ALVO} "
             f"em {data_iso}."
         )
 
     candidatas.sort(
-        key=lambda aula: prioridade(
-            aula.nome
-        )
+        key=lambda aula: prioridade(aula.nome)
     )
 
     inscritas = [
         aula
         for aula in candidatas
-        if aula.inscrito
-        or aula.lista_espera
+        if aula.inscrito or aula.lista_espera
     ]
 
     if inscritas:
         escolhida = inscritas[0]
-
         print(
             f"🎉 Já está inscrito em "
             f"{escolhida.nome}."
         )
-
         return escolhida
 
     abertas = [
@@ -1476,15 +1303,14 @@ def escolher_aula(
     print(
         f"🏆 Aula selecionada: "
         f"{escolhida.nome} "
-        f"({escolhida.inicio}-"
-        f"{escolhida.fim})."
+        f"({escolhida.inicio}-{escolhida.fim})."
     )
 
     return escolhida
 
 
 # ============================================================
-# INSCRIÇÃO
+# INSCRIÇÃO E CONFIRMAÇÃO
 # ============================================================
 
 def validar_url_inscricao(
@@ -1495,8 +1321,7 @@ def validar_url_inscricao(
 
     if (
         parsed.scheme != "https"
-        or parsed.netloc
-        != "www.regibox.pt"
+        or parsed.netloc != "www.regibox.pt"
     ):
         raise RuntimeError(
             "URL de inscrição inesperado."
@@ -1512,9 +1337,7 @@ def validar_url_inscricao(
             "Endpoint de inscrição inesperado."
         )
 
-    parametros = parse_qs(
-        parsed.query
-    )
+    parametros = parse_qs(parsed.query)
 
     if not parametros.get("id_aula"):
         raise RuntimeError(
@@ -1526,10 +1349,7 @@ def validar_url_inscricao(
         [None],
     )[0]
 
-    if (
-        data_url
-        and data_url != data_iso
-    ):
+    if data_url and data_url != data_iso:
         raise RuntimeError(
             f"Data do URL incorreta: "
             f"{data_url} != {data_iso}."
@@ -1539,22 +1359,15 @@ def validar_url_inscricao(
 def extrair_mensagem(
     html: str,
 ) -> Optional[str]:
-    soup = BeautifulSoup(
-        html,
-        "html.parser",
-    )
+    soup = BeautifulSoup(html, "html.parser")
 
     for script in soup.find_all("script"):
-        texto = script.get_text(
-            " ",
-            strip=False,
-        )
+        texto = script.get_text(" ", strip=False)
 
         correspondencia = re.search(
             r"""msg_toast_icon\s*\(\s*["'](.+?)["']\s*,""",
             texto,
-            flags=re.IGNORECASE
-            | re.DOTALL,
+            flags=re.IGNORECASE | re.DOTALL,
         )
 
         if correspondencia:
@@ -1563,10 +1376,7 @@ def extrair_mensagem(
             )
 
     texto = normalizar_texto(
-        soup.get_text(
-            " ",
-            strip=True,
-        )
+        soup.get_text(" ", strip=True)
     )
 
     return texto or None
@@ -1578,14 +1388,11 @@ def inscrever(
     data_iso: str,
 ) -> str:
     if aula.inscrito or aula.lista_espera:
-        return (
-            f"Já inscrito em {aula.nome}"
-        )
+        return f"Já inscrito em {aula.nome}"
 
     if not aula.url_inscrever:
         raise RuntimeError(
-            "A aula não possui URL "
-            "de inscrição."
+            "A aula não possui URL de inscrição."
         )
 
     validar_url_inscricao(
@@ -1594,20 +1401,14 @@ def inscrever(
     )
 
     parametros = parse_qs(
-        urlparse(
-            aula.url_inscrever
-        ).query
+        urlparse(aula.url_inscrever).query
     )
 
-    print(
-        "🎯 A enviar a inscrição..."
-    )
-
+    print("🎯 A enviar a inscrição...")
     print(
         f"🆔 id_aula="
         f"{parametros.get('id_aula', ['?'])[0]}"
     )
-
     print(f"🏋️ modalidade={aula.nome}")
     print(f"📅 data={data_iso}")
 
@@ -1626,23 +1427,15 @@ def inscrever(
 
     if resposta_e_login(resposta):
         raise RuntimeError(
-            "A sessão expirou durante "
-            "a inscrição."
+            "A sessão expirou durante a inscrição."
         )
 
-    mensagem = extrair_mensagem(
-        resposta.text
-    )
+    mensagem = extrair_mensagem(resposta.text)
 
     if mensagem:
-        print(
-            f"💬 Resposta Regibox: "
-            f"{mensagem}"
-        )
+        print(f"💬 Resposta Regibox: {mensagem}")
 
-    texto_upper = normalizar_upper(
-        resposta.text
-    )
+    texto_upper = normalizar_upper(resposta.text)
 
     falhas = [
         "ACESSO NEGADO",
@@ -1654,18 +1447,10 @@ def inscrever(
 
     for falha in falhas:
         if falha in texto_upper:
-            raise RuntimeError(
-                mensagem or falha
-            )
+            raise RuntimeError(mensagem or falha)
 
-    return mensagem or (
-        "Pedido aceite pela Regibox"
-    )
+    return mensagem or "Pedido aceite pela Regibox"
 
-
-# ============================================================
-# CONFIRMAÇÃO
-# ============================================================
 
 def confirmar(
     sessao: requests.Session,
@@ -1673,9 +1458,7 @@ def confirmar(
     regybox_user: str,
     escolhida: Aula,
 ) -> bool:
-    print(
-        "🔎 A confirmar a inscrição..."
-    )
+    print("🔎 A confirmar a inscrição...")
 
     time.sleep(2)
 
@@ -1697,8 +1480,7 @@ def confirmar(
         )
 
         mesmo_horario = (
-            aula.inicio
-            == escolhida.inicio
+            aula.inicio == escolhida.inicio
         )
 
         if (
@@ -1717,13 +1499,18 @@ def confirmar(
 
             print(
                 f"🎉 CONFIRMADO: {estado} "
-                f"em {aula.nome}, "
-                f"às {aula.inicio}."
+                f"em {aula.nome}, às {aula.inicio}."
             )
 
             guardar_json(
                 "06_confirmacao.json",
                 asdict(aula),
+            )
+
+            enviar_email_confirmacao(
+                aula=aula,
+                data_alvo=data_alvo,
+                estado=estado,
             )
 
             return True
@@ -1742,9 +1529,7 @@ def executar() -> int:
 
     data_alvo = (
         agora
-        + timedelta(
-            days=DIAS_ANTECEDENCIA
-        )
+        + timedelta(days=DIAS_ANTECEDENCIA)
     ).date()
 
     print(
@@ -1763,9 +1548,7 @@ def executar() -> int:
         f"{data_alvo.strftime('%d/%m/%Y')}"
     )
 
-    print(
-        f"⏰ Horário alvo: {HORA_ALVO}"
-    )
+    print(f"⏰ Horário alvo: {HORA_ALVO}")
 
     print(
         "🏆 Prioridade: "
@@ -1777,19 +1560,14 @@ def executar() -> int:
             "❌ REGYBOX_USER ou REGYBOX_PASS "
             "não estão configuradas."
         )
-
         return 2
 
-    sessao: Optional[
-        requests.Session
-    ] = None
+    sessao: Optional[requests.Session] = None
 
     try:
         cookies = autenticar_com_playwright()
 
-        sessao = criar_sessao_http(
-            cookies
-        )
+        sessao = criar_sessao_http(cookies)
 
         regybox_user = ativar_sessao_http(
             sessao
@@ -1827,7 +1605,9 @@ def executar() -> int:
             )
 
             print(
-                "✅ Nenhuma nova ação necessária."
+                "✅ Nenhuma nova ação necessária. "
+                "Não será enviado email porque "
+                "não houve uma nova marcação."
             )
 
             return 0
@@ -1838,9 +1618,7 @@ def executar() -> int:
             data_alvo.isoformat(),
         )
 
-        print(
-            f"✅ Pedido enviado: {mensagem}"
-        )
+        print(f"✅ Pedido enviado: {mensagem}")
 
         if not confirmar(
             sessao,
@@ -1864,10 +1642,7 @@ def executar() -> int:
         return 0
 
     except Exception as exc:
-        erro = (
-            f"{type(exc).__name__}: {exc}"
-        )
-
+        erro = f"{type(exc).__name__}: {exc}"
         print(f"❌ ERRO: {erro}")
 
         guardar_texto(
