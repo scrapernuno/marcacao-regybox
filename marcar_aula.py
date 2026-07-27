@@ -36,8 +36,8 @@ PASSWORD = os.environ.get("REGYBOX_PASS", "").strip()
 
 TIMEZONE = ZoneInfo("Atlantic/Madeira")
 
-# Procurar a aula daqui a 3 dias.
-DIAS_ANTECEDENCIA = 3
+# Procurar a aula daqui a 4 dias.
+DIAS_ANTECEDENCIA = 4
 
 HORA_ALVO = "18:25"
 
@@ -51,6 +51,13 @@ PRIORIDADES = [
 ]
 
 TIMEOUT_HTTP = 25
+
+# O workflow deve arrancar cerca de um minuto antes da abertura.
+# Durante este período o robô volta a consultar a Regibox até aparecer
+# o URL real de inscrição.
+MAX_ESPERA_ABERTURA_SEGUNDOS = 5 * 60
+INTERVALO_CONSULTA_SEGUNDOS = 5
+
 PASTA_DIAGNOSTICO = Path("diagnostico_regybox")
 
 HEADERS_HTTP = {
@@ -1309,6 +1316,180 @@ def escolher_aula(
     return escolhida
 
 
+
+def aguardar_abertura_inscricao(
+    sessao: requests.Session,
+    data_alvo,
+    regybox_user: str,
+) -> Aula:
+    """
+    Consulta repetidamente as aulas da data-alvo até:
+
+    - encontrar uma inscrição já existente;
+    - aparecer o URL de inscrição da modalidade prioritária; ou
+    - terminar o período máximo de espera.
+
+    A ordem aplicada é:
+    HYROX/HIROX -> CROSSFIT -> STRENGHT/STRENGTH.
+    """
+    data_iso = data_alvo.isoformat()
+    limite = time.monotonic() + MAX_ESPERA_ABERTURA_SEGUNDOS
+    tentativa = 0
+    ultimo_resumo = []
+
+    print(
+        "⏳ A aguardar a abertura das inscrições "
+        f"durante até {MAX_ESPERA_ABERTURA_SEGUNDOS // 60} minutos..."
+    )
+    print(
+        f"🔁 Nova consulta a cada "
+        f"{INTERVALO_CONSULTA_SEGUNDOS} segundos."
+    )
+
+    while True:
+        tentativa += 1
+        agora_local = datetime.now(TIMEZONE)
+
+        html = obter_html_aulas(
+            sessao,
+            data_alvo,
+            regybox_user,
+        )
+
+        aulas = parsear_aulas(
+            html,
+            data_iso,
+        )
+
+        candidatas = [
+            aula
+            for aula in aulas
+            if aula.inicio == HORA_ALVO
+            and prioridade(aula.nome) < 999
+        ]
+
+        candidatas.sort(
+            key=lambda aula: prioridade(aula.nome)
+        )
+
+        ultimo_resumo = [
+            {
+                "nome": aula.nome,
+                "inicio": aula.inicio,
+                "fim": aula.fim,
+                "inscrito": aula.inscrito,
+                "lista_espera": aula.lista_espera,
+                "aberta": aula.aberta,
+                "ocupacao_atual": aula.ocupacao_atual,
+                "capacidade_maxima": aula.capacidade_maxima,
+            }
+            for aula in candidatas
+        ]
+
+        print(
+            f"🕒 Consulta {tentativa} às "
+            f"{agora_local.strftime('%H:%M:%S')}: "
+            f"{len(candidatas)} candidata(s) às {HORA_ALVO}."
+        )
+
+        for aula in candidatas:
+            estado = (
+                "INSCRITO"
+                if aula.inscrito
+                else (
+                    "LISTA DE ESPERA"
+                    if aula.lista_espera
+                    else (
+                        "ABERTA"
+                        if aula.aberta
+                        else "AGUARDA ABERTURA"
+                    )
+                )
+            )
+
+            print(
+                f"   • {aula.nome} | "
+                f"{aula.inicio}-{aula.fim} | "
+                f"{aula.ocupacao_atual}/"
+                f"{aula.capacidade_maxima} | "
+                f"{estado}"
+            )
+
+        # Não voltar a inscrever quando já existe uma marcação compatível.
+        inscritas = [
+            aula
+            for aula in candidatas
+            if aula.inscrito or aula.lista_espera
+        ]
+
+        if inscritas:
+            escolhida = inscritas[0]
+            print(
+                f"🎉 Já existe marcação em "
+                f"{escolhida.nome} às {escolhida.inicio}."
+            )
+            return escolhida
+
+        # Escolher a primeira modalidade aberta pela ordem de prioridade.
+        abertas = [
+            aula
+            for aula in candidatas
+            if aula.aberta
+        ]
+
+        if abertas:
+            escolhida = abertas[0]
+            print(
+                f"✅ Inscrições abertas para "
+                f"{escolhida.nome} às {escolhida.inicio}."
+            )
+            print(
+                "🏆 Prioridade aplicada: "
+                "HYROX → CROSSFIT → STRENGHT."
+            )
+            return escolhida
+
+        restante = int(
+            max(0, limite - time.monotonic())
+        )
+
+        if restante <= 0:
+            guardar_json(
+                "05_timeout_abertura.json",
+                {
+                    "data": data_iso,
+                    "hora_alvo": HORA_ALVO,
+                    "tentativas": tentativa,
+                    "candidatas": ultimo_resumo,
+                },
+            )
+
+            if candidatas:
+                raise RuntimeError(
+                    "A aula prioritária foi encontrada, "
+                    "mas a inscrição não abriu dentro "
+                    "do período máximo de espera."
+                )
+
+            raise RuntimeError(
+                f"Não apareceu HYROX, CROSSFIT ou "
+                f"STRENGHT às {HORA_ALVO} em {data_iso} "
+                "dentro do período máximo de espera."
+            )
+
+        print(
+            f"⏳ Inscrições ainda fechadas. "
+            f"Restam aproximadamente {restante} segundos."
+        )
+
+        time.sleep(
+            min(
+                INTERVALO_CONSULTA_SEGUNDOS,
+                restante,
+            )
+        )
+
+
 # ============================================================
 # INSCRIÇÃO E CONFIRMAÇÃO
 # ============================================================
@@ -1573,26 +1754,10 @@ def executar() -> int:
             sessao
         )
 
-        html = obter_html_aulas(
+        escolhida = aguardar_abertura_inscricao(
             sessao,
             data_alvo,
             regybox_user,
-        )
-
-        aulas = parsear_aulas(
-            html,
-            data_alvo.isoformat(),
-        )
-
-        if not aulas:
-            raise RuntimeError(
-                "A Regibox não devolveu "
-                "aulas reconhecíveis."
-            )
-
-        escolhida = escolher_aula(
-            aulas,
-            data_alvo.isoformat(),
         )
 
         if (
