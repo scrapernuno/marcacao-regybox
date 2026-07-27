@@ -3,7 +3,7 @@ name: Marcacao RegyBox
 on:
   schedule:
     # 17:34 UTC = 18:34 Madeira (ajuste se necessário)
-    - cron: '34 17 * * 1-5'
+    - cron: '19 17 * * 1-5'
   workflow_dispatch:
 
 jobs:
