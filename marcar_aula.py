@@ -303,7 +303,6 @@ def enviar_email_confirmacao(
         print(f"📧 Email de confirmação enviado para {email_to}.")
 
     except Exception as exc:
-        # A marcação não deve falhar só porque o email falhou.
         print(
             "⚠️ A marcação foi confirmada, mas o email falhou: "
             f"{type(exc).__name__}: {exc}"
@@ -453,8 +452,6 @@ def selecionar_box_playwright(page) -> None:
                                 print("✅ Box selecionada.")
                                 return
 
-                            # Em certas versões a seleção muda a página
-                            # sem o formulário ficar imediatamente visível.
                             print("✅ Opção Naval Box clicada.")
                             return
 
@@ -1316,20 +1313,19 @@ def escolher_aula(
     return escolhida
 
 
-
 def aguardar_abertura_inscricao(
     sessao: requests.Session,
     data_alvo,
     regybox_user: str,
 ) -> Aula:
     """
-    Consulta repetidamente as aulas da data-alvo até:
+    Consulta repetidamente todas as aulas da hora-alvo até:
 
-    - encontrar uma inscrição já existente;
-    - aparecer o URL de inscrição da modalidade prioritária; ou
+    - detetar qualquer inscrição/lista de espera já existente às 18:25;
+    - aparecer uma aula aberta segundo a prioridade definida; ou
     - terminar o período máximo de espera.
 
-    A ordem aplicada é:
+    A ordem aplicada para uma nova marcação é:
     HYROX/HIROX -> CROSSFIT -> STRENGHT/STRENGTH.
     """
     data_iso = data_alvo.isoformat()
@@ -1361,15 +1357,17 @@ def aguardar_abertura_inscricao(
             data_iso,
         )
 
-        candidatas = [
+        todas_as_aulas = [
             aula
             for aula in aulas
             if aula.inicio == HORA_ALVO
-            and prioridade(aula.nome) < 999
         ]
 
-        candidatas.sort(
-            key=lambda aula: prioridade(aula.nome)
+        todas_as_aulas.sort(
+            key=lambda aula: (
+                prioridade(aula.nome),
+                aula.nome.upper(),
+            )
         )
 
         ultimo_resumo = [
@@ -1377,22 +1375,23 @@ def aguardar_abertura_inscricao(
                 "nome": aula.nome,
                 "inicio": aula.inicio,
                 "fim": aula.fim,
+                "prioridade": prioridade(aula.nome),
                 "inscrito": aula.inscrito,
                 "lista_espera": aula.lista_espera,
                 "aberta": aula.aberta,
                 "ocupacao_atual": aula.ocupacao_atual,
                 "capacidade_maxima": aula.capacidade_maxima,
             }
-            for aula in candidatas
+            for aula in todas_as_aulas
         ]
 
         print(
             f"🕒 Consulta {tentativa} às "
             f"{agora_local.strftime('%H:%M:%S')}: "
-            f"{len(candidatas)} candidata(s) às {HORA_ALVO}."
+            f"{len(todas_as_aulas)} aula(s) às {HORA_ALVO}."
         )
 
-        for aula in candidatas:
+        for aula in todas_as_aulas:
             estado = (
                 "INSCRITO"
                 if aula.inscrito
@@ -1407,40 +1406,56 @@ def aguardar_abertura_inscricao(
                 )
             )
 
+            prioridade_texto = (
+                str(prioridade(aula.nome) + 1)
+                if prioridade(aula.nome) < 999
+                else "fora da prioridade"
+            )
+
             print(
                 f"   • {aula.nome} | "
                 f"{aula.inicio}-{aula.fim} | "
                 f"{aula.ocupacao_atual}/"
                 f"{aula.capacidade_maxima} | "
-                f"{estado}"
+                f"{estado} | prioridade={prioridade_texto}"
             )
 
-        # Não voltar a inscrever quando já existe uma marcação compatível.
-        inscritas = [
+        ja_inscritas = [
             aula
-            for aula in candidatas
+            for aula in todas_as_aulas
             if aula.inscrito or aula.lista_espera
         ]
 
-        if inscritas:
-            escolhida = inscritas[0]
+        if ja_inscritas:
+            escolhida = ja_inscritas[0]
             print(
-                f"🎉 Já existe marcação em "
-                f"{escolhida.nome} às {escolhida.inicio}."
+                f"🎉 Já existe uma marcação às {HORA_ALVO}: "
+                f"{escolhida.nome}."
             )
             return escolhida
 
-        # Escolher a primeira modalidade aberta pela ordem de prioridade.
+        candidatas = [
+            aula
+            for aula in todas_as_aulas
+            if prioridade(aula.nome) < 999
+        ]
+
+        candidatas.sort(
+            key=lambda aula: prioridade(aula.nome)
+        )
+
         abertas = [
             aula
             for aula in candidatas
             if aula.aberta
+            and not aula.inscrito
+            and not aula.lista_espera
         ]
 
         if abertas:
             escolhida = abertas[0]
             print(
-                f"✅ Inscrições abertas para "
+                f"✅ Aula aberta e sem inscrição encontrada: "
                 f"{escolhida.nome} às {escolhida.inicio}."
             )
             print(
@@ -1448,6 +1463,26 @@ def aguardar_abertura_inscricao(
                 "HYROX → CROSSFIT → STRENGHT."
             )
             return escolhida
+
+        outras_abertas = [
+            aula
+            for aula in todas_as_aulas
+            if aula.aberta
+            and not aula.inscrito
+            and not aula.lista_espera
+            and prioridade(aula.nome) >= 999
+        ]
+
+        if outras_abertas:
+            print(
+                f"ℹ️ Existem outras aulas abertas às {HORA_ALVO}, "
+                "mas não pertencem às modalidades autorizadas:"
+            )
+            for aula in outras_abertas:
+                print(
+                    f"   • {aula.nome} | "
+                    f"{aula.inicio}-{aula.fim}"
+                )
 
         restante = int(
             max(0, limite - time.monotonic())
@@ -1460,25 +1495,25 @@ def aguardar_abertura_inscricao(
                     "data": data_iso,
                     "hora_alvo": HORA_ALVO,
                     "tentativas": tentativa,
-                    "candidatas": ultimo_resumo,
+                    "todas_as_aulas": ultimo_resumo,
                 },
             )
 
             if candidatas:
                 raise RuntimeError(
-                    "A aula prioritária foi encontrada, "
-                    "mas a inscrição não abriu dentro "
-                    "do período máximo de espera."
+                    "Foram encontradas modalidades prioritárias "
+                    f"às {HORA_ALVO}, mas nenhuma abriu para inscrição "
+                    "dentro do período máximo de espera."
                 )
 
             raise RuntimeError(
-                f"Não apareceu HYROX, CROSSFIT ou "
-                f"STRENGHT às {HORA_ALVO} em {data_iso} "
-                "dentro do período máximo de espera."
+                f"Não apareceu HYROX, CROSSFIT ou STRENGHT "
+                f"às {HORA_ALVO} em {data_iso} dentro do "
+                "período máximo de espera."
             )
 
         print(
-            f"⏳ Inscrições ainda fechadas. "
+            f"⏳ Nenhuma modalidade prioritária está aberta. "
             f"Restam aproximadamente {restante} segundos."
         )
 
