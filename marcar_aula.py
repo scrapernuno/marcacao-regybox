@@ -1036,11 +1036,23 @@ def extrair_urls(
     url_inscrever = None
     url_cancelar = None
 
-    for botao in bloco.find_all("button"):
-        onclick = str(botao.get("onclick", ""))
+    # A Regibox pode colocar a ação em button, a, div, span
+    # ou qualquer outro elemento com onclick.
+    elementos = bloco.find_all(
+        attrs={"onclick": True}
+    )
 
+    for elemento in elementos:
+        onclick = str(
+            elemento.get("onclick", "")
+        ).replace("&amp;", "&")
+
+        # Captura qualquer URL PHP presente no onclick,
+        # incluindo chamadas load_script(...).
         urls = re.findall(
-            r"""[^'"\s,(]+\.php(?:\?[^'"\s,)]*)?""",
+            r"""(?:\.\./|/|https?://)?"""
+            r"""[^'"\s,(]+\.php"""
+            r"""(?:\?[^'"\s,)]*)?""",
             onclick,
             flags=re.IGNORECASE,
         )
@@ -1048,19 +1060,62 @@ def extrair_urls(
         for url_bruto in urls:
             url = urljoin(
                 BASE_URL,
-                url_bruto.replace("&amp;", "&"),
+                url_bruto,
             )
 
             parsed = urlparse(url)
-            prefixo = "/app/app_nova/php/aulas/"
 
-            if not parsed.path.startswith(prefixo):
+            if parsed.netloc not in (
+                "",
+                "www.regibox.pt",
+            ):
                 continue
 
-            if parsed.path.endswith("/marca_aulas.php"):
+            if parsed.path.endswith(
+                "/marca_aulas.php"
+            ):
                 url_inscrever = url
-            elif parsed.path.endswith("/cancela_aula.php"):
+
+            elif parsed.path.endswith(
+                "/cancela_aula.php"
+            ):
                 url_cancelar = url
+
+    # Fallback: procurar marca_aulas.php no HTML bruto do cartão.
+    html_bloco = str(bloco).replace(
+        "&amp;",
+        "&",
+    )
+
+    if not url_inscrever:
+        correspondencia = re.search(
+            r"""(?:\.\./|/|https?://)?"""
+            r"""[^'"\s,(]+/marca_aulas\.php"""
+            r"""\?[^'"\s<)]+""",
+            html_bloco,
+            flags=re.IGNORECASE,
+        )
+
+        if correspondencia:
+            url_inscrever = urljoin(
+                BASE_URL,
+                correspondencia.group(0),
+            )
+
+    if not url_cancelar:
+        correspondencia = re.search(
+            r"""(?:\.\./|/|https?://)?"""
+            r"""[^'"\s,(]+/cancela_aula\.php"""
+            r"""\?[^'"\s<)]+""",
+            html_bloco,
+            flags=re.IGNORECASE,
+        )
+
+        if correspondencia:
+            url_cancelar = urljoin(
+                BASE_URL,
+                correspondencia.group(0),
+            )
 
     return url_inscrever, url_cancelar
 
@@ -1160,6 +1215,13 @@ def parsear_aulas(
 
         ocupacao, capacidade = extrair_capacidade(bloco)
         url_inscrever, url_cancelar = extrair_urls(bloco)
+
+        print(
+            f"🔗 Aula parseada: {nome} | "
+            f"{inicio}-{fim} | "
+            f"inscrever={'SIM' if url_inscrever else 'NÃO'} | "
+            f"cancelar={'SIM' if url_cancelar else 'NÃO'}"
+        )
 
         texto_bloco = normalizar_texto(
             bloco.get_text(" ", strip=True)
