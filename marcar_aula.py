@@ -42,8 +42,9 @@ PRIORIDADES = [
     "STRENGTH",
 ]
 
-MAX_ESPERA_ABERTURA_SEGUNDOS = 8 * 60
-INTERVALO_CONSULTA_SEGUNDOS = 4
+MAX_ESPERA_ABERTURA_SEGUNDOS = 10 * 60
+INTERVALO_CONSULTA_SEGUNDOS = 1
+TEMPO_EXTRA_APOS_TIMEOUT_SEGUNDOS = 90
 TIMEOUT_PADRAO_MS = 10_000
 
 PASTA_DIAGNOSTICO = Path("diagnostico_regybox")
@@ -702,13 +703,22 @@ def aguardar_e_marcar(
     page: Page,
     data_alvo: date,
 ) -> tuple[AulaVisual, str, bool]:
-    limite = time.monotonic() + MAX_ESPERA_ABERTURA_SEGUNDOS
-    tentativa = 0
+    inicio_espera = time.monotonic()
+    limite_normal = inicio_espera + MAX_ESPERA_ABERTURA_SEGUNDOS
+    limite_final = limite_normal + TEMPO_EXTRA_APOS_TIMEOUT_SEGUNDOS
 
-    while True:
+    tentativa = 0
+    entrou_periodo_extra = False
+
+    while time.monotonic() < limite_final:
         tentativa += 1
+
         aulas = inventariar_aulas(page)
-        aulas_1825 = [aula for aula in aulas if aula.inicio == HORA_ALVO]
+        aulas_1825 = [
+            aula
+            for aula in aulas
+            if aula.inicio == HORA_ALVO
+        ]
 
         print(
             f"🕒 Consulta visual {tentativa}: "
@@ -725,8 +735,12 @@ def aguardar_e_marcar(
                 if aula.botao_inscrever
                 else "AGUARDA ABERTURA"
             )
-            print(f"   • {aula.nome} | {aula.inicio}-{aula.fim} | {estado}")
+            print(
+                f"   • {aula.nome} | "
+                f"{aula.inicio}-{aula.fim} | {estado}"
+            )
 
+        # Já existe uma inscrição?
         ja_inscritas = [
             aula
             for aula in aulas_1825
@@ -738,10 +752,21 @@ def aguardar_e_marcar(
                 ja_inscritas,
                 key=lambda aula: aula.indice_prioridade,
             )[0]
-            estado = "LISTA DE ESPERA" if escolhida.lista_espera else "INSCRITO"
-            print(f"🎉 Já existe marcação: {escolhida.nome} — {estado}.")
+
+            estado = (
+                "LISTA DE ESPERA"
+                if escolhida.lista_espera
+                else "INSCRITO"
+            )
+
+            print(
+                f"🎉 Já existe marcação: "
+                f"{escolhida.nome} — {estado}."
+            )
+
             return escolhida, estado, False
 
+        # Modalidades prioritárias disponíveis no horário alvo.
         candidatas = sorted(
             [
                 aula
@@ -751,53 +776,80 @@ def aguardar_e_marcar(
             key=lambda aula: aula.indice_prioridade,
         )
 
-        abertas = [aula for aula in candidatas if aula.botao_inscrever]
+        abertas = [
+            aula
+            for aula in candidatas
+            if aula.botao_inscrever
+        ]
 
+        # Botão INSCREVER apareceu.
         if abertas:
             escolhida = abertas[0]
-            print(f"🎯 A tentar inscrever em {escolhida.nome} às {HORA_ALVO}...")
+
+            print(
+                f"🎯 INSCRIÇÃO ABERTA! "
+                f"A tentar {escolhida.nome} às {HORA_ALVO}..."
+            )
+
             guardar_pagina(page, "02_antes_inscricao")
 
             if not clicar_inscrever_no_card(page, escolhida):
-                raise RuntimeError(
-                    "A aula aparentava estar aberta, mas o controlo "
-                    "de inscrição não pôde ser acionado."
+                print(
+                    "⚠️ O botão apareceu no inventário mas "
+                    "não foi possível clicar. Nova tentativa..."
                 )
+                page.wait_for_timeout(500)
+                continue
 
             confirmar_modal(page)
-            estado = confirmar_estado_visual(page, escolhida)
+
+            estado = confirmar_estado_visual(
+                page,
+                escolhida,
+                timeout_segundos=20,
+            )
+
             guardar_pagina(page, "03_depois_inscricao")
 
-            if not estado:
-                raise RuntimeError(
-                    "O clique foi realizado, mas a página não confirmou "
-                    "INSCRITO, CANCELAR ou LISTA DE ESPERA."
+            if estado:
+                print(
+                    f"🎉 CONFIRMADO: "
+                    f"{estado} em {escolhida.nome}."
                 )
+                return escolhida, estado, True
 
-            print(f"🎉 CONFIRMADO: {estado} em {escolhida.nome}.")
-            return escolhida, estado, True
-
-        restante = int(max(0, limite - time.monotonic()))
-
-        if restante <= 0:
-            guardar_pagina(page, "erro_timeout_abertura")
-            guardar_json(
-                "timeout_abertura.json",
-                {
-                    "data": data_alvo.isoformat(),
-                    "hora": HORA_ALVO,
-                    "tentativas": tentativa,
-                    "aulas": [asdict(aula) for aula in aulas_1825],
-                },
+            print(
+                "⚠️ O clique foi efetuado mas o estado ainda "
+                "não foi confirmado. Vou consultar novamente..."
             )
-            raise RuntimeError(
-                "As modalidades prioritárias foram encontradas, mas "
-                "nenhum botão INSCREVER apareceu dentro do tempo limite."
+            page.wait_for_timeout(1_000)
+            continue
+
+        agora_monotonic = time.monotonic()
+
+        # Quando termina a janela normal, continua durante um período extra.
+        if agora_monotonic >= limite_normal and not entrou_periodo_extra:
+            entrou_periodo_extra = True
+            print(
+                "⏱️ Foi atingido o limite normal de espera. "
+                f"Vou continuar durante mais "
+                f"{TEMPO_EXTRA_APOS_TIMEOUT_SEGUNDOS}s."
             )
 
-        print(
-            f"⏳ Inscrição ainda fechada. Restam cerca de {restante}s."
-        )
+        restante_total = int(max(0, limite_final - agora_monotonic))
+
+        if entrou_periodo_extra:
+            print(
+                "⏳ Inscrição ainda fechada. "
+                f"Período extra: restam cerca de {restante_total}s."
+            )
+        else:
+            restante_normal = int(max(0, limite_normal - agora_monotonic))
+            print(
+                "⏳ Inscrição ainda fechada. "
+                f"Restam cerca de {restante_normal}s "
+                "até ao período extra."
+            )
 
         # Reaplica a data para obrigar a Regibox a atualizar o painel AJAX.
         try:
@@ -806,6 +858,33 @@ def aguardar_e_marcar(
             print(f"⚠️ Não foi possível atualizar o dia: {exc}")
 
         page.wait_for_timeout(INTERVALO_CONSULTA_SEGUNDOS * 1_000)
+
+    # O botão não apareceu nem durante a janela normal nem durante a extra.
+    aulas_finais = inventariar_aulas(page)
+    aulas_finais_1825 = [
+        aula
+        for aula in aulas_finais
+        if aula.inicio == HORA_ALVO
+    ]
+
+    guardar_pagina(page, "erro_timeout_abertura")
+    guardar_json(
+        "timeout_abertura.json",
+        {
+            "data": data_alvo.isoformat(),
+            "hora": HORA_ALVO,
+            "tentativas": tentativa,
+            "tempo_normal_segundos": MAX_ESPERA_ABERTURA_SEGUNDOS,
+            "tempo_extra_segundos": TEMPO_EXTRA_APOS_TIMEOUT_SEGUNDOS,
+            "aulas": [asdict(aula) for aula in aulas_finais_1825],
+        },
+    )
+
+    raise RuntimeError(
+        "As modalidades prioritárias foram encontradas, mas "
+        "nenhum botão INSCREVER apareceu dentro do tempo limite, "
+        f"incluindo os {TEMPO_EXTRA_APOS_TIMEOUT_SEGUNDOS}s extra."
+    )
 
 
 # ============================================================
