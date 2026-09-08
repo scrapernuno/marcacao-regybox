@@ -63,7 +63,8 @@ class AulaVisual:
     indice_prioridade: int
     inscrito: bool
     lista_espera: bool
-    botao_inscrever: bool
+    botao_reservar: bool
+    botao_lista_espera: bool
     elemento_indice: int
 
 
@@ -496,24 +497,42 @@ def inventariar_aulas(page: Page) -> list[AulaVisual]:
                     card.querySelectorAll('button, a, [onclick], [role="button"]')
                 ).filter(visivel);
 
-                const inscrever = acoes.some(acao => {
+                const reservar = acoes.some(acao => {
                     const t = norm(acao.innerText || acao.textContent).toUpperCase();
                     const onclick = (acao.getAttribute('onclick') || '').toUpperCase();
                     const href = (acao.getAttribute('href') || '').toUpperCase();
-                    return t.includes('INSCREVER')
+                    return t.includes('RESERVAR')
+                        || t.includes('INSCREVER')
                         || onclick.includes('MARCA_AULAS')
                         || href.includes('MARCA_AULAS');
                 });
 
-                const inscrito = /CANCELAR|INSCRITO|INSCRITA/.test(texto.toUpperCase());
-                const espera = /LISTA DE ESPERA|ESPERA/.test(texto.toUpperCase());
+                const listaEsperaDisponivel = acoes.some(acao => {
+                    const t = norm(acao.innerText || acao.textContent).toUpperCase();
+                    return t.includes('LISTA DE ESPERA')
+                        || t.includes('ENTRAR NA LISTA')
+                        || t.includes('ESPERA');
+                });
+
+                const textoUpper = texto.toUpperCase();
+
+                const inscrito =
+                    /CANCELAR\s*(RESERVA|INSCRIÇÃO|INSCRICAO)?/.test(textoUpper)
+                    || /JÁ\s*INSCRIT[OA]|JA\s*INSCRIT[OA]/.test(textoUpper)
+                    || /RESERVA\s*CONFIRMADA/.test(textoUpper);
+
+                const espera =
+                    /SAIR\s*DA\s*LISTA\s*DE\s*ESPERA/.test(textoUpper)
+                    || /CANCELAR\s*(A\s*)?LISTA\s*DE\s*ESPERA/.test(textoUpper)
+                    || /JÁ\s*NA\s*LISTA\s*DE\s*ESPERA|JA\s*NA\s*LISTA\s*DE\s*ESPERA/.test(textoUpper);
                 const horario = texto.match(/(\d{1,2}:\d{2})\s*(?:-|>>|A)\s*(\d{1,2}:\d{2})/i);
 
                 resultado.push({
                     texto,
                     inicio: horario ? horario[1] : horaAlvo,
                     fim: horario ? horario[2] : '',
-                    inscrever,
+                    reservar,
+                    listaEsperaDisponivel,
                     inscrito,
                     espera,
                     html: card.outerHTML.substring(0, 4000),
@@ -550,7 +569,8 @@ def inventariar_aulas(page: Page) -> list[AulaVisual]:
                 indice_prioridade=prioridade(nome),
                 inscrito=bool(item.get("inscrito")),
                 lista_espera=bool(item.get("espera")),
-                botao_inscrever=bool(item.get("inscrever")),
+                botao_reservar=bool(item.get("reservar")),
+                botao_lista_espera=bool(item.get("listaEsperaDisponivel")),
                 elemento_indice=indice,
             )
         )
@@ -576,7 +596,7 @@ def localizar_card_prioritario(page: Page, aula: AulaVisual) -> Locator:
     return cards
 
 
-def clicar_inscrever_no_card(page: Page, aula: AulaVisual) -> bool:
+def clicar_reservar_no_card(page: Page, aula: AulaVisual) -> bool:
     cards = localizar_card_prioritario(page, aula)
 
     try:
@@ -604,6 +624,9 @@ def clicar_inscrever_no_card(page: Page, aula: AulaVisual) -> bool:
             pass
 
         acoes = card.locator(
+            "button:has-text('RESERVAR'), "
+            "a:has-text('RESERVAR'), "
+            "[role='button']:has-text('RESERVAR'), "
             "button:has-text('INSCREVER'), "
             "a:has-text('INSCREVER'), "
             "[role='button']:has-text('INSCREVER'), "
@@ -629,7 +652,8 @@ def clicar_inscrever_no_card(page: Page, aula: AulaVisual) -> bool:
                         .toUpperCase();
                     const onclick = (el.getAttribute('onclick') || '').toUpperCase();
                     const href = (el.getAttribute('href') || '').toUpperCase();
-                    return texto.includes('INSCREVER')
+                    return texto.includes('RESERVAR')
+                        || texto.includes('INSCREVER')
                         || onclick.includes('MARCA_AULAS')
                         || href.includes('MARCA_AULAS');
                 });
@@ -688,10 +712,31 @@ def confirmar_estado_visual(
             if HORA_ALVO not in texto:
                 continue
 
-            if "LISTA DE ESPERA" in texto:
+            if any(
+                marcador in texto
+                for marcador in [
+                    "SAIR DA LISTA DE ESPERA",
+                    "CANCELAR LISTA DE ESPERA",
+                    "CANCELAR A LISTA DE ESPERA",
+                    "JÁ NA LISTA DE ESPERA",
+                    "JA NA LISTA DE ESPERA",
+                ]
+            ):
                 return "LISTA DE ESPERA"
 
-            if any(palavra in texto for palavra in ["CANCELAR", "INSCRITO", "INSCRITA"]):
+            if any(
+                marcador in texto
+                for marcador in [
+                    "CANCELAR RESERVA",
+                    "CANCELAR INSCRIÇÃO",
+                    "CANCELAR INSCRICAO",
+                    "JÁ INSCRITO",
+                    "JA INSCRITO",
+                    "JÁ INSCRITA",
+                    "JA INSCRITA",
+                    "RESERVA CONFIRMADA",
+                ]
+            ):
                 return "INSCRITO"
 
         page.wait_for_timeout(1_000)
@@ -732,7 +777,9 @@ def aguardar_e_marcar(
                 else "LISTA DE ESPERA"
                 if aula.lista_espera
                 else "ABERTA"
-                if aula.botao_inscrever
+                if aula.botao_reservar
+                else "LISTA DE ESPERA DISPONÍVEL"
+                if aula.botao_lista_espera
                 else "AGUARDA ABERTURA"
             )
             print(
@@ -779,7 +826,7 @@ def aguardar_e_marcar(
         abertas = [
             aula
             for aula in candidatas
-            if aula.botao_inscrever
+            if aula.botao_reservar
         ]
 
         # Botão INSCREVER apareceu.
@@ -787,15 +834,15 @@ def aguardar_e_marcar(
             escolhida = abertas[0]
 
             print(
-                f"🎯 INSCRIÇÃO ABERTA! "
+                f"🎯 RESERVA ABERTA! "
                 f"A tentar {escolhida.nome} às {HORA_ALVO}..."
             )
 
             guardar_pagina(page, "02_antes_inscricao")
 
-            if not clicar_inscrever_no_card(page, escolhida):
+            if not clicar_reservar_no_card(page, escolhida):
                 print(
-                    "⚠️ O botão apareceu no inventário mas "
+                    "⚠️ O botão RESERVAR apareceu no inventário mas "
                     "não foi possível clicar. Nova tentativa..."
                 )
                 page.wait_for_timeout(500)
@@ -882,7 +929,7 @@ def aguardar_e_marcar(
 
     raise RuntimeError(
         "As modalidades prioritárias foram encontradas, mas "
-        "nenhum botão INSCREVER apareceu dentro do tempo limite, "
+        "nenhum botão RESERVAR apareceu dentro do tempo limite, "
         f"incluindo os {TEMPO_EXTRA_APOS_TIMEOUT_SEGUNDOS}s extra."
     )
 
