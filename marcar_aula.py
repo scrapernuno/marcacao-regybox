@@ -37,9 +37,9 @@ HORA_ALVO = "18:25"
 PRIORIDADES = [
     "HYROX",
     "HIROX",
-    "CROSSFIT",
     "STRENGHT",
     "STRENGTH",
+    "CROSSFIT",
 ]
 
 MAX_ESPERA_ABERTURA_SEGUNDOS = 10 * 60
@@ -1327,7 +1327,7 @@ def executar() -> int:
     else:
         print(f"📅 Data alvo efetiva: {data_alvo.strftime('%d/%m/%Y')}")
     print(f"⏰ Horário alvo: {HORA_ALVO}")
-    print("🏆 Prioridade: HYROX → CROSSFIT → STRENGHT")
+    print("🏆 Prioridade: HYROX → STRENGHT → CROSSFIT")
 
     if not USERNAME or not PASSWORD:
         print("❌ REGYBOX_USER ou REGYBOX_PASS não estão configuradas.")
