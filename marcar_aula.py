@@ -501,10 +501,33 @@ def inventariar_aulas(page: Page) -> list[AulaVisual]:
                     const t = norm(acao.innerText || acao.textContent).toUpperCase();
                     const onclick = (acao.getAttribute('onclick') || '').toUpperCase();
                     const href = (acao.getAttribute('href') || '').toUpperCase();
-                    return t.includes('RESERVAR')
+
+                    const perigoso =
+                        t.includes('CANCELAR')
+                        || t.includes('CANCEL')
+                        || t.includes('SAIR')
+                        || t.includes('REMOVER')
+                        || t.includes('APAGAR')
+                        || t.includes('EXCLUIR')
+                        || t.includes('ANULAR')
+                        || t.includes('DESMARCAR')
+                        || t.includes('LISTA DE ESPERA');
+
+                    if (perigoso) return false;
+
+                    // Primeiro reconhece os nomes habituais.
+                    if (
+                        t.includes('RESERVAR')
                         || t.includes('INSCREVER')
                         || onclick.includes('MARCA_AULAS')
-                        || href.includes('MARCA_AULAS');
+                        || href.includes('MARCA_AULAS')
+                    ) {
+                        return true;
+                    }
+
+                    // Fallback: qualquer controlo de ação visível dentro
+                    // do cartão da aula, desde que não seja destrutivo.
+                    return true;
                 });
 
                 const listaEsperaDisponivel = acoes.some(acao => {
@@ -597,6 +620,16 @@ def localizar_card_prioritario(page: Page, aula: AulaVisual) -> Locator:
 
 
 def clicar_reservar_no_card(page: Page, aula: AulaVisual) -> bool:
+    """
+    Clica numa ação do cartão da aula pretendida.
+
+    Prioridade:
+    1. RESERVAR / INSCREVER;
+    2. qualquer outro botão/link/onclick visível dentro do cartão.
+
+    Por segurança, nunca clica em ações com texto CANCELAR, SAIR,
+    REMOVER, ANULAR ou LISTA DE ESPERA.
+    """
     cards = localizar_card_prioritario(page, aula)
 
     try:
@@ -608,14 +641,14 @@ def clicar_reservar_no_card(page: Page, aula: AulaVisual) -> bool:
         card = cards.nth(indice)
 
         try:
-            texto = normalizar_upper(card.inner_text(timeout=2_000))
+            texto_card = normalizar_upper(card.inner_text(timeout=2_000))
         except Exception:
             continue
 
-        if HORA_ALVO not in texto:
+        if HORA_ALVO not in texto_card:
             continue
 
-        if aula.nome not in texto and aula.nome != "DESCONHECIDA":
+        if aula.nome not in texto_card and aula.nome != "DESCONHECIDA":
             continue
 
         try:
@@ -623,68 +656,187 @@ def clicar_reservar_no_card(page: Page, aula: AulaVisual) -> bool:
         except Exception:
             pass
 
-        acoes = card.locator(
+        # 1) Tenta primeiro os nomes conhecidos.
+        acoes_preferidas = card.locator(
             "button:has-text('RESERVAR'), "
             "a:has-text('RESERVAR'), "
             "[role='button']:has-text('RESERVAR'), "
             "button:has-text('INSCREVER'), "
             "a:has-text('INSCREVER'), "
-            "[role='button']:has-text('INSCREVER'), "
-            "[onclick*='marca_aulas.php'], "
-            "a[href*='marca_aulas.php']"
+            "[role='button']:has-text('INSCREVER')"
         )
 
-        if clicar_primeiro_visivel(acoes, 5_000):
+        if clicar_primeiro_visivel(acoes_preferidas, 3_000):
+            print("🖱️ Clique efetuado no botão RESERVAR/INSCREVER.")
             return True
 
-        # Executa o onclick do elemento real quando o texto não está acessível.
+        # 2) Fallback: qualquer ação visível dentro do cartão,
+        #    exceto ações potencialmente destrutivas.
         resultado = card.evaluate(
             """
             card => {
-                const elementos = Array.from(
-                    card.querySelectorAll('button, a, [onclick], [role="button"]')
-                );
+                function norm(valor) {
+                    return (valor || '').replace(/\\s+/g, ' ').trim().toUpperCase();
+                }
 
-                const alvo = elementos.find(el => {
-                    const texto = (el.innerText || el.textContent || '')
-                        .replace(/\s+/g, ' ')
-                        .trim()
-                        .toUpperCase();
-                    const onclick = (el.getAttribute('onclick') || '').toUpperCase();
-                    const href = (el.getAttribute('href') || '').toUpperCase();
+                function visivel(el) {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+
+                    return style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && rect.width > 0
+                        && rect.height > 0;
+                }
+
+                const elementos = Array.from(
+                    card.querySelectorAll(
+                        'button, a, [onclick], [role="button"], input[type="button"], input[type="submit"]'
+                    )
+                ).filter(visivel);
+
+                // Primeiro procura uma ação explicitamente de reserva.
+                let alvo = elementos.find(el => {
+                    const texto = norm(
+                        el.innerText
+                        || el.textContent
+                        || el.value
+                        || el.getAttribute('aria-label')
+                        || el.getAttribute('title')
+                    );
+
+                    const onclick = norm(el.getAttribute('onclick'));
+                    const href = norm(el.getAttribute('href'));
+
                     return texto.includes('RESERVAR')
                         || texto.includes('INSCREVER')
                         || onclick.includes('MARCA_AULAS')
                         || href.includes('MARCA_AULAS');
                 });
 
-                if (!alvo) return false;
+                // Se não encontrou, escolhe a primeira ação segura.
+                if (!alvo) {
+                    alvo = elementos.find(el => {
+                        const texto = norm(
+                            el.innerText
+                            || el.textContent
+                            || el.value
+                            || el.getAttribute('aria-label')
+                            || el.getAttribute('title')
+                        );
+
+                        return !texto.includes('CANCELAR')
+                            && !texto.includes('CANCEL')
+                            && !texto.includes('SAIR')
+                            && !texto.includes('REMOVER')
+                            && !texto.includes('APAGAR')
+                            && !texto.includes('EXCLUIR')
+                            && !texto.includes('ANULAR')
+                            && !texto.includes('DESMARCAR')
+                            && !texto.includes('LISTA DE ESPERA');
+                    });
+                }
+
+                if (!alvo) return {clicou: false, texto: ''};
+
+                const textoAlvo = norm(
+                    alvo.innerText
+                    || alvo.textContent
+                    || alvo.value
+                    || alvo.getAttribute('aria-label')
+                    || alvo.getAttribute('title')
+                );
+
                 alvo.scrollIntoView({block: 'center'});
                 alvo.click();
-                return true;
+
+                return {
+                    clicou: true,
+                    texto: textoAlvo || '(sem texto)'
+                };
             }
             """
         )
 
-        if resultado:
+        if isinstance(resultado, dict) and resultado.get("clicou"):
+            print(
+                "🖱️ Clique efetuado numa ação do cartão da aula: "
+                f"{resultado.get('texto', '(sem texto)')}"
+            )
             return True
 
     return False
 
-
 def confirmar_modal(page: Page) -> None:
+    """
+    Confirma apenas ações positivas.
+    Nunca clica em CANCELAR, SAIR, REMOVER, ANULAR, DESMARCAR
+    ou outros controlos destrutivos.
+    """
     page.wait_for_timeout(800)
 
     botoes = page.locator(
-        "button:has-text('SIM'), button:has-text('CONFIRMAR'), "
-        "button:has-text('OK'), a:has-text('SIM'), "
-        ".modal button:has-text('INScrever' i)"
+        "button:has-text('SIM'), "
+        "button:has-text('CONFIRMAR'), "
+        "button:has-text('OK'), "
+        "button:has-text('RESERVAR'), "
+        "button:has-text('INSCREVER'), "
+        "a:has-text('SIM'), "
+        "a:has-text('CONFIRMAR'), "
+        "a:has-text('RESERVAR')"
     )
 
-    if clicar_primeiro_visivel(botoes, 3_000):
-        print("✅ Confirmação do modal efetuada.")
-        page.wait_for_timeout(1_500)
+    try:
+        total = botoes.count()
+    except Exception:
+        total = 0
 
+    for indice in range(min(total, 50)):
+        botao = botoes.nth(indice)
+
+        try:
+            if not botao.is_visible():
+                continue
+
+            texto = normalizar_upper(
+                botao.inner_text(timeout=1_500)
+                or botao.get_attribute("value")
+                or botao.get_attribute("aria-label")
+                or ""
+            )
+
+            proibidos = [
+                "CANCELAR",
+                "CANCEL",
+                "SAIR",
+                "REMOVER",
+                "APAGAR",
+                "EXCLUIR",
+                "ANULAR",
+                "DESMARCAR",
+            ]
+
+            if any(palavra in texto for palavra in proibidos):
+                print(
+                    f"🛑 Botão ignorado por segurança: "
+                    f"{texto or '(sem texto)'}"
+                )
+                continue
+
+            botao.scroll_into_view_if_needed(timeout=3_000)
+            botao.click(timeout=3_000, force=True)
+            print(
+                f"✅ Confirmação positiva efetuada: "
+                f"{texto or '(sem texto)'}"
+            )
+            page.wait_for_timeout(1_500)
+            return
+
+        except Exception:
+            continue
+
+    print("ℹ️ Nenhum modal de confirmação positiva encontrado.")
 
 def confirmar_estado_visual(
     page: Page,
@@ -743,6 +895,120 @@ def confirmar_estado_visual(
 
     return None
 
+
+
+def verificar_marcacoes_periodo(
+    page: Page,
+    data_inicio: date,
+    data_fim: date,
+) -> list[dict]:
+    """
+    Verifica, dia a dia, entre data_inicio e data_fim (inclusive),
+    se existe alguma aula às HORA_ALVO já marcada ou em lista de espera.
+
+    A função apenas reporta o que encontra. Não faz cancelamentos nem
+    alterações às reservas existentes.
+    """
+    encontradas: list[dict] = []
+
+    print(
+        "🔎 A verificar marcações existentes entre "
+        f"{data_inicio.strftime('%d/%m/%Y')} e "
+        f"{data_fim.strftime('%d/%m/%Y')}..."
+    )
+
+    data_atual = data_inicio
+
+    while data_atual <= data_fim:
+        print(f"📆 Verificação: {data_atual.strftime('%d/%m/%Y')}")
+
+        try:
+            selecionar_data(page, data_atual)
+        except Exception as exc:
+            print(
+                f"⚠️ Não foi possível selecionar "
+                f"{data_atual.strftime('%d/%m/%Y')}: {exc}"
+            )
+            data_atual += timedelta(days=1)
+            continue
+
+        page.wait_for_timeout(800)
+
+        try:
+            aulas = inventariar_aulas(page)
+        except Exception as exc:
+            print(
+                f"⚠️ Não foi possível inventariar aulas em "
+                f"{data_atual.strftime('%d/%m/%Y')}: {exc}"
+            )
+            data_atual += timedelta(days=1)
+            continue
+
+        aulas_hora = [
+            aula
+            for aula in aulas
+            if aula.inicio == HORA_ALVO
+        ]
+
+        marcadas = [
+            aula
+            for aula in aulas_hora
+            if aula.inscrito or aula.lista_espera
+        ]
+
+        if not aulas_hora:
+            print(
+                f"   ℹ️ Nenhuma aula às {HORA_ALVO} "
+                f"em {data_atual.strftime('%d/%m/%Y')}."
+            )
+        elif not marcadas:
+            print(
+                f"   ➖ Nenhuma marcação detetada às {HORA_ALVO}."
+            )
+        else:
+            for aula in marcadas:
+                estado = (
+                    "LISTA DE ESPERA"
+                    if aula.lista_espera
+                    else "INSCRITO"
+                )
+
+                print(
+                    f"   ✅ {aula.nome} | "
+                    f"{aula.inicio}-{aula.fim} | {estado}"
+                )
+
+                encontradas.append(
+                    {
+                        "data": data_atual.isoformat(),
+                        "nome": aula.nome,
+                        "inicio": aula.inicio,
+                        "fim": aula.fim,
+                        "estado": estado,
+                    }
+                )
+
+        data_atual += timedelta(days=1)
+
+    guardar_json(
+        "marcacoes_periodo.json",
+        {
+            "inicio": data_inicio.isoformat(),
+            "fim": data_fim.isoformat(),
+            "hora": HORA_ALVO,
+            "marcacoes": encontradas,
+        },
+    )
+
+    if encontradas:
+        print(
+            f"✅ Foram encontradas {len(encontradas)} "
+            "marcação(ões) no período."
+        )
+    else:
+        print("ℹ️ Não foram encontradas marcações no período.")
+
+    return encontradas
 
 def aguardar_e_marcar(
     page: Page,
@@ -982,6 +1248,33 @@ def executar() -> int:
         try:
             autenticar(page)
             abrir_aulas(page)
+
+            # Antes de tentar uma nova reserva, verifica todas as datas
+            # entre hoje e +4 dias para identificar marcações já existentes.
+            marcacoes_periodo = verificar_marcacoes_periodo(
+                page,
+                agora.date(),
+                data_alvo,
+            )
+
+            marcacao_no_alvo = next(
+                (
+                    item
+                    for item in marcacoes_periodo
+                    if item["data"] == data_alvo.isoformat()
+                ),
+                None,
+            )
+
+            if marcacao_no_alvo:
+                print(
+                    "✅ Já existe uma marcação na data alvo: "
+                    f"{marcacao_no_alvo['nome']} — "
+                    f"{marcacao_no_alvo['estado']}."
+                )
+
+            # Volta explicitamente à data alvo antes de iniciar a lógica
+            # de espera/reserva.
             selecionar_data(page, data_alvo)
 
             aula, estado, nova_marcacao = aguardar_e_marcar(page, data_alvo)
