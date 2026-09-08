@@ -415,38 +415,66 @@ def selecionar_data(page: Page, data_alvo: date) -> None:
     data_iso = data_alvo.isoformat()
     print(f"📅 A selecionar {data_iso} no calendário...")
 
+    # Conta cartões visíveis antes da mudança. Serve apenas como diagnóstico;
+    # a proteção principal contra conteúdo antigo está em inventariar_aulas(),
+    # que agora ignora qualquer cartão oculto.
+    try:
+        visiveis_antes = page.locator(
+            ".filtro0:visible, [class*='filtro']:visible, li:visible, tr:visible"
+        ).count()
+    except Exception:
+        visiveis_antes = -1
+
     seletor = f"[onclick*=\"wods_dia('{data_iso}')\"]"
     elementos = page.locator(seletor)
 
-    if clicar_primeiro_visivel(elementos, 6_000):
-        page.wait_for_timeout(2_500)
-        print("✅ Dia selecionado por clique real.")
-        return
+    clicou = clicar_primeiro_visivel(elementos, 6_000)
 
-    resultado = page.evaluate(
-        """
-        dataIso => {
-            try {
-                if (typeof window.wods_dia === 'function') {
-                    window.wods_dia(dataIso);
-                    return true;
+    if not clicou:
+        resultado = page.evaluate(
+            """
+            dataIso => {
+                try {
+                    if (typeof window.wods_dia === 'function') {
+                        window.wods_dia(dataIso);
+                        return true;
+                    }
+                } catch (erro) {
+                    return String(erro);
                 }
-            } catch (erro) {
-                return String(erro);
+                return false;
             }
-            return false;
-        }
-        """,
-        data_iso,
+            """,
+            data_iso,
+        )
+
+        print(f"🔧 Resultado de wods_dia: {resultado}")
+
+        if resultado is not True:
+            guardar_pagina(page, f"erro_selecionar_data_{data_iso}")
+            raise RuntimeError(f"Não foi possível selecionar {data_iso}.")
+
+    # A Regibox atualiza o painel por AJAX. Damos tempo para concluir e,
+    # quando possível, aguardamos um curto período de inatividade de rede.
+    try:
+        page.wait_for_load_state("networkidle", timeout=4_000)
+    except PlaywrightTimeoutError:
+        pass
+
+    page.wait_for_timeout(1_500)
+
+    try:
+        visiveis_depois = page.locator(
+            ".filtro0:visible, [class*='filtro']:visible, li:visible, tr:visible"
+        ).count()
+    except Exception:
+        visiveis_depois = -1
+
+    print(
+        f"✅ Dia {data_iso} selecionado. "
+        f"Elementos visíveis antes/depois: "
+        f"{visiveis_antes}/{visiveis_depois}."
     )
-
-    print(f"🔧 Resultado de wods_dia: {resultado}")
-
-    if resultado is not True:
-        guardar_pagina(page, "erro_selecionar_data")
-        raise RuntimeError(f"Não foi possível selecionar {data_iso}.")
-
-    page.wait_for_timeout(2_500)
 
 
 # ============================================================
@@ -473,6 +501,8 @@ def inventariar_aulas(page: Page) -> list[AulaVisual]:
 
             const todos = Array.from(document.querySelectorAll('div, li, tr'));
             const candidatos = todos.filter(el => {
+                if (!visivel(el)) return false;
+
                 const texto = norm(el.innerText || el.textContent);
                 if (!texto.includes(horaAlvo)) return false;
                 const filhosComHora = Array.from(el.children || []).filter(filho =>
@@ -486,6 +516,8 @@ def inventariar_aulas(page: Page) -> list[AulaVisual]:
 
             for (const el of candidatos) {
                 const card = el.closest('.filtro0, [class*="filtro"], li, tr') || el;
+                if (!visivel(card)) continue;
+
                 const texto = norm(card.innerText || card.textContent);
                 if (!texto.includes(horaAlvo)) continue;
 
@@ -920,6 +952,14 @@ def verificar_marcacoes_periodo(
     data_atual = data_inicio
 
     while data_atual <= data_fim:
+        if data_atual.weekday() >= 5:
+            print(
+                f"📆 Verificação: {data_atual.strftime('%d/%m/%Y')} "
+                "— fim de semana, ignorado."
+            )
+            data_atual += timedelta(days=1)
+            continue
+
         print(f"📆 Verificação: {data_atual.strftime('%d/%m/%Y')}")
 
         try:
@@ -1272,6 +1312,26 @@ def executar() -> int:
                     f"{marcacao_no_alvo['nome']} — "
                     f"{marcacao_no_alvo['estado']}."
                 )
+
+            # Não existem marcações automáticas ao fim de semana.
+            # O período hoje..+4 já foi verificado acima, mas não se tenta
+            # reservar sábado ou domingo.
+            if data_alvo.weekday() >= 5:
+                print(
+                    f"ℹ️ A data alvo {data_alvo.strftime('%d/%m/%Y')} "
+                    "é fim de semana. Nenhuma reserva será tentada."
+                )
+                guardar_json(
+                    "resultado_final.json",
+                    {
+                        "data": data_alvo.isoformat(),
+                        "hora": HORA_ALVO,
+                        "estado": "FIM_DE_SEMANA",
+                        "nova_marcacao": False,
+                        "marcacoes_periodo": marcacoes_periodo,
+                    },
+                )
+                return 0
 
             # Volta explicitamente à data alvo antes de iniciar a lógica
             # de espera/reserva.
