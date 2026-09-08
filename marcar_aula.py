@@ -572,9 +572,9 @@ def inventariar_aulas(page: Page) -> list[AulaVisual]:
                 const textoUpper = texto.toUpperCase();
 
                 const inscrito =
-                    /CANCELAR\s*(RESERVA|INSCRIÇÃO|INSCRICAO)?/.test(textoUpper)
-                    || /JÁ\s*INSCRIT[OA]|JA\s*INSCRIT[OA]/.test(textoUpper)
-                    || /RESERVA\s*CONFIRMADA/.test(textoUpper);
+                    /JÁ\s*INSCRIT[OA]|JA\s*INSCRIT[OA]/.test(textoUpper)
+                    || /RESERVA\s*CONFIRMADA/.test(textoUpper)
+                    || /INSCRIÇÃO\s*CONFIRMADA|INSCRICAO\s*CONFIRMADA/.test(textoUpper);
 
                 const espera =
                     /SAIR\s*DA\s*LISTA\s*DE\s*ESPERA/.test(textoUpper)
@@ -911,14 +911,13 @@ def confirmar_estado_visual(
             if any(
                 marcador in texto
                 for marcador in [
-                    "CANCELAR RESERVA",
-                    "CANCELAR INSCRIÇÃO",
-                    "CANCELAR INSCRICAO",
                     "JÁ INSCRITO",
                     "JA INSCRITO",
                     "JÁ INSCRITA",
                     "JA INSCRITA",
                     "RESERVA CONFIRMADA",
+                    "INSCRIÇÃO CONFIRMADA",
+                    "INSCRICAO CONFIRMADA",
                 ]
             ):
                 return "INSCRITO"
@@ -1248,7 +1247,13 @@ def executar() -> int:
     preparar_diagnostico()
 
     agora = datetime.now(TIMEZONE)
-    data_alvo = (agora + timedelta(days=DIAS_ANTECEDENCIA)).date()
+    data_alvo_original = (agora + timedelta(days=DIAS_ANTECEDENCIA)).date()
+    data_alvo = data_alvo_original
+
+    # Se hoje +4 cair ao fim de semana, usa a sexta-feira imediatamente anterior.
+    # Ex.: terça-feira 08/09 + 4 dias = sábado 12/09 -> alvo = sexta 11/09.
+    while data_alvo.weekday() >= 5:
+        data_alvo -= timedelta(days=1)
 
     print(
         f"[{agora.strftime('%H:%M:%S')}] "
@@ -1256,9 +1261,16 @@ def executar() -> int:
     )
     print(f"📅 Data atual Madeira: {agora.strftime('%d/%m/%Y')}")
     print(
-        f"📅 Data alvo (+{DIAS_ANTECEDENCIA} dias): "
-        f"{data_alvo.strftime('%d/%m/%Y')}"
+        f"📅 Data alvo calculada (+{DIAS_ANTECEDENCIA} dias): "
+        f"{data_alvo_original.strftime('%d/%m/%Y')}"
     )
+    if data_alvo != data_alvo_original:
+        print(
+            "📅 A data calculada cai ao fim de semana; "
+            f"vou usar {data_alvo.strftime('%d/%m/%Y')}."
+        )
+    else:
+        print(f"📅 Data alvo efetiva: {data_alvo.strftime('%d/%m/%Y')}")
     print(f"⏰ Horário alvo: {HORA_ALVO}")
     print("🏆 Prioridade: HYROX → CROSSFIT → STRENGHT")
 
@@ -1312,26 +1324,6 @@ def executar() -> int:
                     f"{marcacao_no_alvo['nome']} — "
                     f"{marcacao_no_alvo['estado']}."
                 )
-
-            # Não existem marcações automáticas ao fim de semana.
-            # O período hoje..+4 já foi verificado acima, mas não se tenta
-            # reservar sábado ou domingo.
-            if data_alvo.weekday() >= 5:
-                print(
-                    f"ℹ️ A data alvo {data_alvo.strftime('%d/%m/%Y')} "
-                    "é fim de semana. Nenhuma reserva será tentada."
-                )
-                guardar_json(
-                    "resultado_final.json",
-                    {
-                        "data": data_alvo.isoformat(),
-                        "hora": HORA_ALVO,
-                        "estado": "FIM_DE_SEMANA",
-                        "nova_marcacao": False,
-                        "marcacoes_periodo": marcacoes_periodo,
-                    },
-                )
-                return 0
 
             # Volta explicitamente à data alvo antes de iniciar a lógica
             # de espera/reserva.
