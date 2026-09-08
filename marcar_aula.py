@@ -530,7 +530,14 @@ def inventariar_aulas(page: Page) -> list[AulaVisual]:
                 ).filter(visivel);
 
                 const reservar = acoes.some(acao => {
-                    const t = norm(acao.innerText || acao.textContent).toUpperCase();
+                    const t = norm(
+                        acao.innerText
+                        || acao.textContent
+                        || acao.value
+                        || acao.getAttribute('aria-label')
+                        || acao.getAttribute('title')
+                    ).toUpperCase();
+
                     const onclick = (acao.getAttribute('onclick') || '').toUpperCase();
                     const href = (acao.getAttribute('href') || '').toUpperCase();
 
@@ -547,19 +554,15 @@ def inventariar_aulas(page: Page) -> list[AulaVisual]:
 
                     if (perigoso) return false;
 
-                    // Primeiro reconhece os nomes habituais.
-                    if (
-                        t.includes('RESERVAR')
+                    return t.includes('RESERVAR')
                         || t.includes('INSCREVER')
+                        || t.includes('MARCAR')
                         || onclick.includes('MARCA_AULAS')
+                        || onclick.includes('RESERV')
+                        || onclick.includes('INSCREV')
                         || href.includes('MARCA_AULAS')
-                    ) {
-                        return true;
-                    }
-
-                    // Fallback: qualquer controlo de ação visível dentro
-                    // do cartão da aula, desde que não seja destrutivo.
-                    return true;
+                        || href.includes('RESERV')
+                        || href.includes('INSCREV');
                 });
 
                 const listaEsperaDisponivel = acoes.some(acao => {
@@ -653,14 +656,11 @@ def localizar_card_prioritario(page: Page, aula: AulaVisual) -> Locator:
 
 def clicar_reservar_no_card(page: Page, aula: AulaVisual) -> bool:
     """
-    Clica numa ação do cartão da aula pretendida.
+    Clica exclusivamente numa ação de reserva/inscrição da aula escolhida.
 
-    Prioridade:
-    1. RESERVAR / INSCREVER;
-    2. qualquer outro botão/link/onclick visível dentro do cartão.
-
-    Por segurança, nunca clica em ações com texto CANCELAR, SAIR,
-    REMOVER, ANULAR ou LISTA DE ESPERA.
+    Nunca usa um botão genérico como fallback. Isto evita cliques em elementos
+    alheios à reserva (por exemplo "STAR 11") e mantém bloqueadas ações
+    destrutivas como CANCELAR.
     """
     cards = localizar_card_prioritario(page, aula)
 
@@ -688,22 +688,76 @@ def clicar_reservar_no_card(page: Page, aula: AulaVisual) -> bool:
         except Exception:
             pass
 
-        # 1) Tenta primeiro os nomes conhecidos.
-        acoes_preferidas = card.locator(
-            "button:has-text('RESERVAR'), "
-            "a:has-text('RESERVAR'), "
-            "[role='button']:has-text('RESERVAR'), "
-            "button:has-text('INSCREVER'), "
-            "a:has-text('INSCREVER'), "
-            "[role='button']:has-text('INSCREVER')"
-        )
+        # Procura explicitamente RESERVAR / INSCREVER / MARCAR,
+        # incluindo botões, links, inputs e elementos com onclick.
+        seletores = [
+            "button:has-text('RESERVAR')",
+            "a:has-text('RESERVAR')",
+            "[role='button']:has-text('RESERVAR')",
+            "[onclick]:has-text('RESERVAR')",
+            "input[type='button'][value*='RESERVAR' i]",
+            "input[type='submit'][value*='RESERVAR' i]",
+            "button:has-text('INSCREVER')",
+            "a:has-text('INSCREVER')",
+            "[role='button']:has-text('INSCREVER')",
+            "[onclick]:has-text('INSCREVER')",
+            "input[type='button'][value*='INSCREVER' i]",
+            "input[type='submit'][value*='INSCREVER' i]",
+            "button:has-text('MARCAR')",
+            "a:has-text('MARCAR')",
+            "[role='button']:has-text('MARCAR')",
+            "[onclick]:has-text('MARCAR')",
+        ]
 
-        if clicar_primeiro_visivel(acoes_preferidas, 3_000):
-            print("🖱️ Clique efetuado no botão RESERVAR/INSCREVER.")
-            return True
+        for seletor in seletores:
+            try:
+                loc = card.locator(seletor)
+                qtd = loc.count()
+            except Exception:
+                continue
 
-        # 2) Fallback: qualquer ação visível dentro do cartão,
-        #    exceto ações potencialmente destrutivas.
+            for j in range(min(qtd, 20)):
+                alvo = loc.nth(j)
+
+                try:
+                    if not alvo.is_visible():
+                        continue
+
+                    rotulo = normalizar_upper(
+                        (alvo.inner_text(timeout=1_500) or "")
+                        or (alvo.get_attribute("value") or "")
+                        or (alvo.get_attribute("aria-label") or "")
+                        or (alvo.get_attribute("title") or "")
+                    )
+
+                    proibidos = [
+                        "CANCELAR",
+                        "CANCEL",
+                        "SAIR",
+                        "REMOVER",
+                        "APAGAR",
+                        "EXCLUIR",
+                        "ANULAR",
+                        "DESMARCAR",
+                        "LISTA DE ESPERA",
+                    ]
+
+                    if any(p in rotulo for p in proibidos):
+                        print(f"🛑 Ação ignorada por segurança: {rotulo}")
+                        continue
+
+                    alvo.scroll_into_view_if_needed(timeout=3_000)
+                    alvo.click(timeout=4_000, force=True)
+                    print(
+                        "🖱️ Clique efetuado na ação de reserva: "
+                        f"{rotulo or '(sem texto)'}"
+                    )
+                    return True
+
+                except Exception:
+                    continue
+
+        # Última tentativa: onclick/href que revele semanticamente uma reserva.
         resultado = card.evaluate(
             """
             card => {
@@ -715,7 +769,6 @@ def clicar_reservar_no_card(page: Page, aula: AulaVisual) -> bool:
                     if (!el) return false;
                     const style = window.getComputedStyle(el);
                     const rect = el.getBoundingClientRect();
-
                     return style.display !== 'none'
                         && style.visibility !== 'hidden'
                         && rect.width > 0
@@ -728,8 +781,7 @@ def clicar_reservar_no_card(page: Page, aula: AulaVisual) -> bool:
                     )
                 ).filter(visivel);
 
-                // Primeiro procura uma ação explicitamente de reserva.
-                let alvo = elementos.find(el => {
+                const alvo = elementos.find(el => {
                     const texto = norm(
                         el.innerText
                         || el.textContent
@@ -737,40 +789,36 @@ def clicar_reservar_no_card(page: Page, aula: AulaVisual) -> bool:
                         || el.getAttribute('aria-label')
                         || el.getAttribute('title')
                     );
-
                     const onclick = norm(el.getAttribute('onclick'));
                     const href = norm(el.getAttribute('href'));
 
+                    const proibido =
+                        texto.includes('CANCELAR')
+                        || texto.includes('CANCEL')
+                        || texto.includes('SAIR')
+                        || texto.includes('REMOVER')
+                        || texto.includes('APAGAR')
+                        || texto.includes('EXCLUIR')
+                        || texto.includes('ANULAR')
+                        || texto.includes('DESMARCAR')
+                        || texto.includes('LISTA DE ESPERA');
+
+                    if (proibido) return false;
+
                     return texto.includes('RESERVAR')
                         || texto.includes('INSCREVER')
+                        || texto.includes('MARCAR')
                         || onclick.includes('MARCA_AULAS')
-                        || href.includes('MARCA_AULAS');
+                        || onclick.includes('RESERV')
+                        || onclick.includes('INSCREV')
+                        || href.includes('MARCA_AULAS')
+                        || href.includes('RESERV')
+                        || href.includes('INSCREV');
                 });
 
-                // Se não encontrou, escolhe a primeira ação segura.
                 if (!alvo) {
-                    alvo = elementos.find(el => {
-                        const texto = norm(
-                            el.innerText
-                            || el.textContent
-                            || el.value
-                            || el.getAttribute('aria-label')
-                            || el.getAttribute('title')
-                        );
-
-                        return !texto.includes('CANCELAR')
-                            && !texto.includes('CANCEL')
-                            && !texto.includes('SAIR')
-                            && !texto.includes('REMOVER')
-                            && !texto.includes('APAGAR')
-                            && !texto.includes('EXCLUIR')
-                            && !texto.includes('ANULAR')
-                            && !texto.includes('DESMARCAR')
-                            && !texto.includes('LISTA DE ESPERA');
-                    });
+                    return {clicou: false, texto: ''};
                 }
-
-                if (!alvo) return {clicou: false, texto: ''};
 
                 const textoAlvo = norm(
                     alvo.innerText
@@ -793,11 +841,18 @@ def clicar_reservar_no_card(page: Page, aula: AulaVisual) -> bool:
 
         if isinstance(resultado, dict) and resultado.get("clicou"):
             print(
-                "🖱️ Clique efetuado numa ação do cartão da aula: "
+                "🖱️ Clique efetuado na ação de reserva: "
                 f"{resultado.get('texto', '(sem texto)')}"
             )
             return True
 
+    # Guarda diagnóstico para vermos exatamente os controlos existentes
+    # no cartão quando a Regibox indicar que a aula está aberta.
+    guardar_pagina(page, "erro_botao_reservar_nao_encontrado")
+    print(
+        "⚠️ Não encontrei uma ação explícita RESERVAR/INSCREVER/MARCAR "
+        "no cartão da aula. Nenhum botão genérico foi clicado."
+    )
     return False
 
 def confirmar_modal(page: Page) -> None:
