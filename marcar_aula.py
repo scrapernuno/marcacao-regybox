@@ -493,202 +493,157 @@ def inventariar_aulas(page: Page) -> list[AulaVisual]:
                 if (!el) return false;
                 const style = window.getComputedStyle(el);
                 const rect = el.getBoundingClientRect();
-
                 return style.display !== 'none'
                     && style.visibility !== 'hidden'
                     && rect.width > 0
                     && rect.height > 0;
             }
 
-            function acaoDisponivel(el) {
-                if (!visivel(el)) return false;
-
-                const style = window.getComputedStyle(el);
-                const ariaDisabled = (el.getAttribute('aria-disabled') || '').toLowerCase();
-                const disabled = el.disabled === true || el.hasAttribute('disabled');
-                const classe = (el.className || '').toString().toLowerCase();
-
-                if (disabled) return false;
-                if (ariaDisabled === 'true') return false;
-                if (style.pointerEvents === 'none') return false;
-                if (classe.includes('disabled') || classe.includes('desativ')) return false;
-
-                return true;
+            function nomeModalidade(texto) {
+                const t = texto.toUpperCase();
+                const prioridades = ['HYROX', 'HIROX', 'STRENGHT', 'STRENGTH', 'CROSSFIT'];
+                for (const p of prioridades) {
+                    if (t.includes(p)) return p;
+                }
+                return '';
             }
 
-            function textoAcao(el) {
-                return norm(
+            function encontrarCard(el) {
+                let atual = el;
+                let melhor = null;
+
+                for (let i = 0; i < 10 && atual; i++, atual = atual.parentElement) {
+                    if (!visivel(atual)) continue;
+
+                    const texto = norm(atual.innerText || atual.textContent);
+                    const horario = texto.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
+
+                    if (
+                        horario
+                        && horario[1] === horaAlvo
+                        && nomeModalidade(texto)
+                    ) {
+                        melhor = atual;
+                        break;
+                    }
+                }
+
+                return melhor;
+            }
+
+            const resultado = [];
+            const vistos = new Set();
+
+            // 1) Primeiro parte de TODOS os elementos visíveis cujo texto é RESERVAR.
+            const todos = Array.from(document.querySelectorAll('*')).filter(visivel);
+
+            const reservarEls = todos.filter(el => {
+                const t = norm(
                     el.innerText
                     || el.textContent
                     || el.value
                     || el.getAttribute('aria-label')
                     || el.getAttribute('title')
                 ).toUpperCase();
-            }
 
-            function ehAcaoReserva(el) {
-                const t = textoAcao(el);
-                const onclick = (el.getAttribute('onclick') || '').toUpperCase();
-                const href = (el.getAttribute('href') || '').toUpperCase();
+                // Evita contentores gigantes que apenas HERDAM "RESERVAR".
+                const filhosVisiveis = Array.from(el.children || []).filter(visivel);
+                const filhoReserva = filhosVisiveis.some(filho => {
+                    const ft = norm(
+                        filho.innerText
+                        || filho.textContent
+                        || filho.value
+                        || filho.getAttribute('aria-label')
+                        || filho.getAttribute('title')
+                    ).toUpperCase();
+                    return ft === 'RESERVAR';
+                });
 
-                if (
-                    t.includes('CANCELAR')
-                    || t.includes('CANCEL')
-                    || t.includes('SAIR')
-                    || t.includes('REMOVER')
-                    || t.includes('ANULAR')
-                    || t.includes('DESMARCAR')
-                    || t.includes('LISTA DE ESPERA')
-                ) {
-                    return false;
-                }
+                return t === 'RESERVAR' && !filhoReserva;
+            });
 
-                return t.includes('RESERVAR')
-                    || t.includes('INSCREVER')
-                    || t.includes('MARCAR')
-                    || onclick.includes('MARCA_AULAS')
-                    || onclick.includes('RESERV')
-                    || onclick.includes('INSCREV')
-                    || href.includes('MARCA_AULAS')
-                    || href.includes('RESERV')
-                    || href.includes('INSCREV');
-            }
-
-            function encontrarCard(el) {
-                let atual = el;
-
-                for (let i = 0; i < 8 && atual; i++, atual = atual.parentElement) {
-                    const texto = norm(atual.innerText || atual.textContent);
-                    if (
-                        visivel(atual)
-                        && texto.includes(horaAlvo)
-                        && /\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}/.test(texto)
-                    ) {
-                        return atual;
-                    }
-                }
-
-                return null;
-            }
-
-            const acoes = Array.from(
-                document.querySelectorAll(
-                    'button, a, [role="button"], [onclick], input[type="button"], input[type="submit"]'
-                )
-            ).filter(visivel);
-
-            const cards = [];
-            const vistos = new Set();
-
-            for (const acao of acoes) {
-                const card = encontrarCard(acao);
+            for (const botao of reservarEls) {
+                const card = encontrarCard(botao);
                 if (!card) continue;
 
                 const texto = norm(card.innerText || card.textContent);
-                const horario = texto.match(
-                    /(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/
-                );
+                const horario = texto.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
+                const nome = nomeModalidade(texto);
 
-                if (!horario || horario[1] !== horaAlvo) continue;
+                if (!horario || horario[1] !== horaAlvo || !nome) continue;
 
-                // Chave estável para evitar cartões duplicados vindos de elementos nested.
-                const rect = card.getBoundingClientRect();
-                const chave = [
-                    Math.round(rect.top),
-                    Math.round(rect.left),
-                    horario[1],
-                    horario[2],
-                    texto.substring(0, 180),
-                ].join('|');
-
+                const chave = `${nome}|${horario[1]}|${horario[2]}`;
                 if (vistos.has(chave)) continue;
                 vistos.add(chave);
 
-                const acoesCard = Array.from(
-                    card.querySelectorAll(
-                        'button, a, [role="button"], [onclick], input[type="button"], input[type="submit"]'
-                    )
-                ).filter(visivel);
-
-                const botaoReserva = acoesCard.find(ehAcaoReserva);
-                const botaoListaEspera = acoesCard.find(el => {
-                    const t = textoAcao(el);
-                    return t.includes('LISTA DE ESPERA')
-                        || t.includes('ENTRAR NA LISTA');
-                });
-
                 const textoUpper = texto.toUpperCase();
 
-                const inscrito =
-                    /JÁ\s*INSCRIT[OA]|JA\s*INSCRIT[OA]/.test(textoUpper)
-                    || /RESERVA\s*CONFIRMADA/.test(textoUpper)
-                    || /INSCRIÇÃO\s*CONFIRMADA|INSCRICAO\s*CONFIRMADA/.test(textoUpper);
-
-                const espera =
-                    /SAIR\s*DA\s*LISTA\s*DE\s*ESPERA/.test(textoUpper)
-                    || /CANCELAR\s*(A\s*)?LISTA\s*DE\s*ESPERA/.test(textoUpper)
-                    || /JÁ\s*NA\s*LISTA\s*DE\s*ESPERA|JA\s*NA\s*LISTA\s*DE\s*ESPERA/.test(textoUpper);
-
-                cards.push({
+                resultado.push({
                     texto,
                     inicio: horario[1],
                     fim: horario[2],
-                    reservar: !!botaoReserva && acaoDisponivel(botaoReserva),
-                    listaEsperaDisponivel:
-                        !!botaoListaEspera && acaoDisponivel(botaoListaEspera),
-                    inscrito,
-                    espera,
+                    reservar: true,
+                    listaEsperaDisponivel: false,
+                    inscrito:
+                        /JÁ\s*INSCRIT[OA]|JA\s*INSCRIT[OA]/.test(textoUpper)
+                        || /RESERVA\s*CONFIRMADA/.test(textoUpper)
+                        || /INSCRIÇÃO\s*CONFIRMADA|INSCRICAO\s*CONFIRMADA/.test(textoUpper),
+                    espera:
+                        /SAIR\s*DA\s*LISTA\s*DE\s*ESPERA/.test(textoUpper)
+                        || /CANCELAR\s*(A\s*)?LISTA\s*DE\s*ESPERA/.test(textoUpper)
+                        || /JÁ\s*NA\s*LISTA\s*DE\s*ESPERA|JA\s*NA\s*LISTA\s*DE\s*ESPERA/.test(textoUpper),
                 });
             }
 
-            // Fallback: se ainda não houver cartões, procura blocos visíveis
-            // com o horário alvo e sem descendentes com o mesmo horário.
-            if (cards.length === 0) {
-                const blocos = Array.from(
-                    document.querySelectorAll('div, li, article, section, tr')
-                ).filter(visivel);
+            // 2) Depois acrescenta aulas às 18:25 sem RESERVAR visível.
+            const blocos = Array.from(
+                document.querySelectorAll('div, li, article, section, tr')
+            ).filter(visivel);
 
-                for (const el of blocos) {
-                    const texto = norm(el.innerText || el.textContent);
-                    const horario = texto.match(
-                        /(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/
-                    );
+            for (const el of blocos) {
+                const texto = norm(el.innerText || el.textContent);
+                const horario = texto.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
+                const nome = nomeModalidade(texto);
 
-                    if (!horario || horario[1] !== horaAlvo) continue;
+                if (!horario || horario[1] !== horaAlvo || !nome) continue;
 
-                    const filhosComMesmoHorario = Array.from(el.children || []).some(filho => {
-                        const t = norm(filho.innerText || filho.textContent);
-                        return t.includes(horaAlvo)
-                            && /\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}/.test(t);
-                    });
+                const chave = `${nome}|${horario[1]}|${horario[2]}`;
+                if (vistos.has(chave)) continue;
 
-                    if (filhosComMesmoHorario) continue;
+                // Usa o menor bloco visível possível: se um filho já contém a mesma
+                // modalidade e horário, este bloco é apenas um contentor maior.
+                const filhoMaisEspecifico = Array.from(el.children || []).some(filho => {
+                    if (!visivel(filho)) return false;
+                    const ft = norm(filho.innerText || filho.textContent).toUpperCase();
+                    return ft.includes(nome)
+                        && ft.includes(horaAlvo)
+                        && /\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}/.test(ft);
+                });
 
-                    const rect = el.getBoundingClientRect();
-                    const chave = [
-                        Math.round(rect.top),
-                        Math.round(rect.left),
-                        horario[1],
-                        horario[2],
-                        texto.substring(0, 180),
-                    ].join('|');
+                if (filhoMaisEspecifico) continue;
 
-                    if (vistos.has(chave)) continue;
-                    vistos.add(chave);
+                vistos.add(chave);
 
-                    cards.push({
-                        texto,
-                        inicio: horario[1],
-                        fim: horario[2],
-                        reservar: false,
-                        listaEsperaDisponivel: false,
-                        inscrito: false,
-                        espera: false,
-                    });
-                }
+                const textoUpper = texto.toUpperCase();
+
+                resultado.push({
+                    texto,
+                    inicio: horario[1],
+                    fim: horario[2],
+                    reservar: false,
+                    listaEsperaDisponivel: /LISTA DE ESPERA/.test(textoUpper),
+                    inscrito:
+                        /JÁ\s*INSCRIT[OA]|JA\s*INSCRIT[OA]/.test(textoUpper)
+                        || /RESERVA\s*CONFIRMADA/.test(textoUpper)
+                        || /INSCRIÇÃO\s*CONFIRMADA|INSCRICAO\s*CONFIRMADA/.test(textoUpper),
+                    espera:
+                        /SAIR\s*DA\s*LISTA\s*DE\s*ESPERA/.test(textoUpper)
+                        || /CANCELAR\s*(A\s*)?LISTA\s*DE\s*ESPERA/.test(textoUpper)
+                        || /JÁ\s*NA\s*LISTA\s*DE\s*ESPERA|JA\s*NA\s*LISTA\s*DE\s*ESPERA/.test(textoUpper),
+                });
             }
 
-            return cards;
+            return resultado;
         }
         """,
         HORA_ALVO,
@@ -701,15 +656,13 @@ def inventariar_aulas(page: Page) -> list[AulaVisual]:
         texto_upper = texto.upper()
         nome = ""
 
-        # Reconhece apenas a modalidade efetivamente presente no próprio cartão.
         for modalidade in PRIORIDADES:
             if modalidade in texto_upper:
                 nome = modalidade
                 break
 
         if not nome:
-            # Se não for uma modalidade prioritária, não entra na seleção.
-            nome = texto.split(" ")[0] if texto else "DESCONHECIDA"
+            continue
 
         aulas.append(
             AulaVisual(
@@ -751,152 +704,100 @@ def localizar_card_prioritario(page: Page, aula: AulaVisual) -> Locator:
     return cards
 
 def clicar_reservar_no_card(page: Page, aula: AulaVisual) -> bool:
-    cards = localizar_card_prioritario(page, aula)
+    """
+    Procura elementos visíveis cujo texto seja exatamente RESERVAR e só clica
+    naquele cujo ancestral contém a modalidade escolhida e o horário 18:25.
+    Nunca clica em CANCELAR nem em botões genéricos.
+    """
+    resultado = page.evaluate(
+        """
+        ({modalidade, horaAlvo}) => {
+            function norm(valor) {
+                return (valor || '').replace(/\s+/g, ' ').trim();
+            }
 
-    try:
-        total = cards.count()
-    except Exception:
-        total = 0
+            function visivel(el) {
+                if (!el) return false;
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.display !== 'none'
+                    && style.visibility !== 'hidden'
+                    && rect.width > 0
+                    && rect.height > 0;
+            }
 
-    melhor_card = None
-    melhor_area = None
+            const todos = Array.from(document.querySelectorAll('*')).filter(visivel);
 
-    for indice in range(min(total, 200)):
-        card = cards.nth(indice)
+            const candidatos = todos.filter(el => {
+                const t = norm(
+                    el.innerText
+                    || el.textContent
+                    || el.value
+                    || el.getAttribute('aria-label')
+                    || el.getAttribute('title')
+                ).toUpperCase();
 
-        try:
-            if not card.is_visible():
-                continue
+                if (t !== 'RESERVAR') return false;
 
-            texto = normalizar_upper(card.inner_text(timeout=2_000))
+                const filhosVisiveis = Array.from(el.children || []).filter(visivel);
+                const filhoReserva = filhosVisiveis.some(filho => {
+                    const ft = norm(
+                        filho.innerText
+                        || filho.textContent
+                        || filho.value
+                        || filho.getAttribute('aria-label')
+                        || filho.getAttribute('title')
+                    ).toUpperCase();
+                    return ft === 'RESERVAR';
+                });
 
-            if HORA_ALVO not in texto:
-                continue
+                return !filhoReserva;
+            });
 
-            if aula.nome != "DESCONHECIDA" and aula.nome not in texto:
-                continue
+            for (const alvo of candidatos) {
+                let atual = alvo;
 
-            # Evita escolher contentores gigantes que englobem vários cartões.
-            box = card.bounding_box()
-            if not box:
-                continue
+                for (let i = 0; i < 10 && atual; i++, atual = atual.parentElement) {
+                    if (!visivel(atual)) continue;
 
-            area = box["width"] * box["height"]
+                    const texto = norm(atual.innerText || atual.textContent).toUpperCase();
 
-            # Tem de existir dentro deste mesmo bloco uma ação explícita de reserva.
-            acoes = card.locator(
-                "button:has-text('RESERVAR'), "
-                "a:has-text('RESERVAR'), "
-                "[role='button']:has-text('RESERVAR'), "
-                "[onclick]:has-text('RESERVAR'), "
-                "input[type='button'][value*='RESERVAR' i], "
-                "input[type='submit'][value*='RESERVAR' i], "
-                "button:has-text('INSCREVER'), "
-                "a:has-text('INSCREVER'), "
-                "[role='button']:has-text('INSCREVER'), "
-                "[onclick]:has-text('INSCREVER'), "
-                "button:has-text('MARCAR'), "
-                "a:has-text('MARCAR'), "
-                "[role='button']:has-text('MARCAR')"
-            )
+                    if (
+                        texto.includes(modalidade)
+                        && texto.includes(horaAlvo)
+                        && /\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}/.test(texto)
+                    ) {
+                        alvo.scrollIntoView({block: 'center'});
+                        alvo.click();
+                        return {
+                            clicou: true,
+                            texto: 'RESERVAR',
+                            contexto: texto.substring(0, 300),
+                        };
+                    }
+                }
+            }
 
-            if acoes.count() == 0:
-                continue
-
-            # Preferir o menor contentor que contém modalidade + hora + botão.
-            if melhor_area is None or area < melhor_area:
-                melhor_card = card
-                melhor_area = area
-
-        except Exception:
-            continue
-
-    if melhor_card is None:
-        guardar_pagina(page, "erro_card_reserva_nao_encontrado")
-        print(
-            f"⚠️ Não encontrei um cartão válido com "
-            f"{aula.nome} + {HORA_ALVO} + botão RESERVAR."
-        )
-        return False
-
-    acoes = melhor_card.locator(
-        "button:has-text('RESERVAR'), "
-        "a:has-text('RESERVAR'), "
-        "[role='button']:has-text('RESERVAR'), "
-        "[onclick]:has-text('RESERVAR'), "
-        "input[type='button'][value*='RESERVAR' i], "
-        "input[type='submit'][value*='RESERVAR' i], "
-        "button:has-text('INSCREVER'), "
-        "a:has-text('INSCREVER'), "
-        "[role='button']:has-text('INSCREVER'), "
-        "[onclick]:has-text('INSCREVER'), "
-        "button:has-text('MARCAR'), "
-        "a:has-text('MARCAR'), "
-        "[role='button']:has-text('MARCAR')"
+            return {clicou: false, texto: '', contexto: ''};
+        }
+        """,
+        {
+            "modalidade": aula.nome,
+            "horaAlvo": HORA_ALVO,
+        },
     )
 
-    try:
-        total_acoes = acoes.count()
-    except Exception:
-        total_acoes = 0
+    if isinstance(resultado, dict) and resultado.get("clicou"):
+        print(
+            f"🖱️ Clique efetuado: "
+            f"{aula.nome} {HORA_ALVO} → RESERVAR"
+        )
+        return True
 
-    for indice in range(min(total_acoes, 30)):
-        alvo = acoes.nth(indice)
-
-        try:
-            if not alvo.is_visible():
-                continue
-
-            rotulo = normalizar_upper(
-                (alvo.inner_text(timeout=1_500) or "")
-                or (alvo.get_attribute("value") or "")
-                or (alvo.get_attribute("aria-label") or "")
-                or (alvo.get_attribute("title") or "")
-            )
-
-            proibidos = [
-                "CANCELAR",
-                "CANCEL",
-                "SAIR",
-                "REMOVER",
-                "APAGAR",
-                "EXCLUIR",
-                "ANULAR",
-                "DESMARCAR",
-                "LISTA DE ESPERA",
-            ]
-
-            if any(p in rotulo for p in proibidos):
-                print(f"🛑 Ação ignorada por segurança: {rotulo}")
-                continue
-
-            # Se for um botão nativo desativado, ainda não está aberto.
-            if alvo.is_disabled():
-                continue
-
-            aria_disabled = (
-                alvo.get_attribute("aria-disabled") or ""
-            ).strip().lower()
-
-            if aria_disabled == "true":
-                continue
-
-            alvo.scroll_into_view_if_needed(timeout=3_000)
-            alvo.click(timeout=4_000, force=True)
-
-            print(
-                f"🖱️ Clique efetuado: "
-                f"{aula.nome} {HORA_ALVO} → "
-                f"{rotulo or 'RESERVAR'}"
-            )
-            return True
-
-        except Exception:
-            continue
-
+    guardar_pagina(page, "erro_reservar_exato_nao_encontrado")
     print(
-        f"⏳ O cartão {aula.nome} {HORA_ALVO} existe, "
-        "mas o botão de reserva ainda não está acionável."
+        f"⚠️ O cartão {aula.nome} {HORA_ALVO} foi encontrado, "
+        "mas não encontrei um elemento visível com texto exato RESERVAR."
     )
     return False
 
